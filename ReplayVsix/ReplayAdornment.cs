@@ -1,122 +1,140 @@
-﻿//------------------------------------------------------------------------------
-// <copyright file="ReplayAdornment.cs" company="Company">
-//     Copyright (c) Company.  All rights reserved.
-// </copyright>
-//------------------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.Text.Formatting;
+using System.Windows;
+using System.Diagnostics;
+using System.ComponentModel.Composition;
+using Microsoft.VisualStudio.Utilities;
+using System.Linq;
 
-namespace ReplayVsix
+// 
+// 
+// 
+// 
+// Microsoft.VSSDK.BuildTools
+
+[Export(typeof(IWpfTextViewCreationListener)), ContentType("text"), TextViewRole(PredefinedTextViewRoles.Document)]
+public sealed class ReplayAdornmentTextViewCreationListener : IWpfTextViewCreationListener
 {
-    /// <summary>
-    /// ReplayAdornment places red boxes behind all the "a"s in the editor window
-    /// </summary>
-    internal sealed class ReplayAdornment
+    public void TextViewCreated(IWpfTextView textView) => new ReplayAdornment(textView);
+
+#pragma warning disable 649, 169
+    [Export(typeof(AdornmentLayerDefinition)), Name("ReplayAdornment"), Order(After = PredefinedAdornmentLayers.Selection, Before = PredefinedAdornmentLayers.Text)]
+    private AdornmentLayerDefinition editorAdornmentLayer;
+#pragma warning restore 649,146
+}
+
+
+public sealed class ReplayAdornment
+{
+    private readonly IAdornmentLayer Layer;
+    private readonly IWpfTextView View;
+    private readonly Brush Brush = new SolidColorBrush(Color.FromArgb(0x20, 0x00, 0x00, 0xff)).AndFreeze();
+    private readonly Pen Pen = new Pen(new SolidColorBrush(Colors.Red).AndFreeze(), 0.5).AndFreeze();
+    //private Microsoft.CodeAnalysis.Workspace _workspace;
+    //private Microsoft.CodeAnalysis.DocumentId _documentId;
+
+    public ReplayAdornment(IWpfTextView view)
     {
-        /// <summary>
-        /// The layer of the adornment.
-        /// </summary>
-        private readonly IAdornmentLayer layer;
+        Layer = view.GetAdornmentLayer("ReplayAdornment");
+        View = view;
+        View.LayoutChanged += OnLayoutChanged;
+    }
 
-        /// <summary>
-        /// Text view where the adornment is created.
-        /// </summary>
-        private readonly IWpfTextView view;
-
-        /// <summary>
-        /// Adornment brush.
-        /// </summary>
-        private readonly Brush brush;
-
-        /// <summary>
-        /// Adornment pen.
-        /// </summary>
-        private readonly Pen pen;
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ReplayAdornment"/> class.
-        /// </summary>
-        /// <param name="view">Text view to create the adornment for</param>
-        public ReplayAdornment(IWpfTextView view)
+    internal void OnLayoutChanged(object sender, TextViewLayoutChangedEventArgs e)
+    {
+        // Raised whenever the rendered text displayed in the ITextView changes - whenever the view does a layout
+        // (which happens when DisplayTextLineContainingBufferPosition is called or in response to text or classification
+        // changes), and also when the view scrolls horizontally, or when its size changes.
+        // Responsible for adding the adornment to any reformatted lines.
+        try
         {
-            if (view == null)
+            var b = false;
+            if (b)
             {
-                throw new ArgumentNullException("view");
-            }
-
-            this.layer = view.GetAdornmentLayer("ReplayAdornment");
-
-            this.view = view;
-            this.view.LayoutChanged += this.OnLayoutChanged;
-
-            // Create the pen and brush to color the box behind the a's
-            this.brush = new SolidColorBrush(Color.FromArgb(0x20, 0x00, 0x00, 0xff));
-            this.brush.Freeze();
-
-            var penBrush = new SolidColorBrush(Colors.Red);
-            penBrush.Freeze();
-            this.pen = new Pen(penBrush, 0.5);
-            this.pen.Freeze();
-        }
-
-        /// <summary>
-        /// Handles whenever the text displayed in the view changes by adding the adornment to any reformatted lines
-        /// </summary>
-        /// <remarks><para>This event is raised whenever the rendered text displayed in the <see cref="ITextView"/> changes.</para>
-        /// <para>It is raised whenever the view does a layout (which happens when DisplayTextLineContainingBufferPosition is called or in response to text or classification changes).</para>
-        /// <para>It is also raised whenever the view scrolls horizontally or when its size changes.</para>
-        /// </remarks>
-        /// <param name="sender">The event sender.</param>
-        /// <param name="e">The event arguments.</param>
-        internal void OnLayoutChanged(object sender, TextViewLayoutChangedEventArgs e)
-        {
-            foreach (ITextViewLine line in e.NewOrReformattedLines)
-            {
-                this.CreateVisuals(line);
+                //var componentModel = (Microsoft.VisualStudio.ComponentModelHost.IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel));
+                //var workspace = componentModel.GetService<Microsoft.VisualStudio.LanguageServices.VisualStudioWorkspace>();
+                //var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+                //var activeDocument = dte?.ActiveDocument;
+                //if (activeDocument != null)
+                //{
+                //    var documentId = workspace.CurrentSolution.GetDocumentIdsWithFilePath(activeDocument.FullName).FirstOrDefault();
+                //    if (documentId != null)
+                //    {
+                //        var document = workspace.CurrentSolution.GetDocument(documentId);
+                //        var project = document.Project;
+                //        System.Diagnostics.Debug.WriteLine(project.OutputFilePath);
+                //    }
+                //}
             }
         }
-
-        /// <summary>
-        /// Adds the scarlet box behind the 'a' characters within the given line
-        /// </summary>
-        /// <param name="line">Line to add the adornments</param>
-        private void CreateVisuals(ITextViewLine line)
+        catch (Exception ex)
         {
-            IWpfTextViewLineCollection textViewLines = this.view.TextViewLines;
+            Debug.WriteLine(ex.Message);
+        }
 
-            // Loop through each character, and place a box around any 'a'
-            for (int charIndex = line.Start; charIndex < line.End; charIndex++)
+        foreach (ITextViewLine line in e.NewOrReformattedLines)
+        {
+            CreateVisuals(line);
+        }
+    }
+
+    private void CreateVisuals(ITextViewLine line)
+    {
+        IWpfTextViewLineCollection textViewLines = View.TextViewLines;
+        for (int charIndex = line.Start; charIndex < line.End; charIndex++)
+        {
+            if (View.TextSnapshot[charIndex] == 'a')
             {
-                if (this.view.TextSnapshot[charIndex] == 'a')
+                SnapshotSpan span = new SnapshotSpan(View.TextSnapshot, Span.FromBounds(charIndex, charIndex + 1));
+                Geometry geometry = textViewLines.GetMarkerGeometry(span);
+                if (geometry != null)
                 {
-                    SnapshotSpan span = new SnapshotSpan(this.view.TextSnapshot, Span.FromBounds(charIndex, charIndex + 1));
-                    Geometry geometry = textViewLines.GetMarkerGeometry(span);
-                    if (geometry != null)
-                    {
-                        var drawing = new GeometryDrawing(this.brush, this.pen, geometry);
-                        drawing.Freeze();
-
-                        var drawingImage = new DrawingImage(drawing);
-                        drawingImage.Freeze();
-
-                        var image = new Image
-                        {
-                            Source = drawingImage,
-                        };
-
-                        // Align the image with the top of the bounds of the text geometry
-                        Canvas.SetLeft(image, geometry.Bounds.Left);
-                        Canvas.SetTop(image, geometry.Bounds.Top);
-
-                        this.layer.AddAdornment(AdornmentPositioningBehavior.TextRelative, span, null, image, null);
-                    }
+                    var drawing = new GeometryDrawing(Brush, Pen, geometry).AndFreeze();
+                    var image = new Image { Source = new DrawingImage(drawing).AndFreeze() };
+                    Canvas.SetLeft(image, geometry.Bounds.Left);
+                    Canvas.SetTop(image, geometry.Bounds.Top);
+                    Layer.AddAdornment(AdornmentPositioningBehavior.TextRelative, span, null, image, null);
                 }
             }
         }
+    }
+
+    //public Microsoft.CodeAnalysis.Workspace Workspace
+    //{
+    //    get
+    //    {
+    //        if (_workspace != null) return _workspace;
+    //        var componentModel = (Microsoft.VisualStudio.ComponentModelHost.IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel));
+    //        _workspace = componentModel.GetService<Microsoft.VisualStudio.LanguageServices.VisualStudioWorkspace>();
+    //        return _workspace;
+    //    }
+    //}
+
+    //public Microsoft.CodeAnalysis.DocumentId DocumentId
+    //{
+    //    get
+    //    {
+    //        if (_documentId != null) return _documentId;
+    //        //var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+    //        //var activeDocument = dte?.ActiveDocument;
+    //        //if (activeDocument == null) return _documentId;
+    //        //_documentId = Workspace.CurrentSolution.GetDocumentIdsWithFilePath(activeDocument.FullName).FirstOrDefault();
+    //        return _documentId;
+    //        //var d = workspace.CurrentSolution.GetDocument(documentid);
+    //    }
+    //}
+
+}
+
+
+public static class Extensions
+{
+    public static T AndFreeze<T>(this T freezable) where T : Freezable
+    {
+        freezable.Freeze(); return freezable;
     }
 }
