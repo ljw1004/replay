@@ -6,6 +6,7 @@
     "Microsoft.VisualStudio.Text.UI.Wpf": "14.3.25407",
     "System.Collections.Immutable": "1.1.37",
     "System.ComponentModel": "4.0.1",
+    "System.Threading.Tasks.Dataflow": "4.6.0",
     "VSSDK.ComponentModelHost": "12.0.4",
     "VSSDK.DTE": "7.0.4"
   },

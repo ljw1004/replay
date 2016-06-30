@@ -1,0 +1,11 @@
+﻿{
+  "dependencies": {
+    "Microsoft.Tpl.Dataflow": "4.5.24"
+  },
+  "frameworks": {
+    ".NETFramework,Version=v4.6.1": {}
+  },
+  "runtimes": {
+    "win": {}
+  }
+}

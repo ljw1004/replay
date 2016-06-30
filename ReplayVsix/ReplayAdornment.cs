@@ -1,4 +1,6 @@
 ﻿using Microsoft.CodeAnalysis;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Formatting;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -7,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -42,7 +45,7 @@ public sealed class ReplayAdornment
     DocumentId DocumentId;
 
     // Replay
-    ReplayManager ReplayManager;
+    ReplayHostManager ReplayManager;
     VersionStamp ReplayDocumentVersionStamp;
 
 
@@ -62,7 +65,7 @@ public sealed class ReplayAdornment
 
     private void OnClosed(object sender, EventArgs e)
     {
-        ReplayManager.ResultsChanged -= OnReplayResultsChanged;
+        ReplayManager.LineChanged -= OnReplayLineChanged;
         if (ReplayManager != null) ReplayManager.Dispose(); ReplayManager = null;
     }
 
@@ -85,41 +88,36 @@ public sealed class ReplayAdornment
         if (document == null) return;
         if (ReplayManager == null)
         {
-            ReplayManager = ReplayManager.ForProject(document.Project.FilePath);
-            ReplayManager.ResultsChanged += OnReplayResultsChanged;
+            ReplayManager = ReplayHostManager.Create(document.Project);
+            ReplayManager.LineChanged += OnReplayLineChanged;
         }
         VersionStamp docVersion; if (!document.TryGetTextVersion(out docVersion)) return;
         if (docVersion != ReplayDocumentVersionStamp)
         {
             ReplayDocumentVersionStamp = docVersion;
-            ReplayManager.TriggerReplayAsync(document.Project);
+            ReplayManager.TriggerReplayAsync(document);
         }
 
-        CreateAdornments(e.NewOrReformattedLines);
-    }
-
-    void CreateAdornments(IEnumerable<Microsoft.VisualStudio.Text.Formatting.ITextViewLine> lines)
-    {
-        foreach (var eline in lines)
-        {
-            int iline = eline.End.GetContainingLine().LineNumber;
-            string msg; if (!ReplayManager.Results.TryGetValue(iline, out msg)) continue;
-            var geometry = View.TextViewLines.GetMarkerGeometry(eline.Extent);
-            if (geometry == null) continue;
-            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {msg}" };
-            Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
-            Canvas.SetTop(adornment, geometry.Bounds.Top);
-            View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, eline.Extent, null, adornment, null);
-        }
+        var start = View.TextViewLines.FirstVisibleLine.Start.GetContainingLine().LineNumber;
+        var end = View.TextViewLines.LastVisibleLine.End.GetContainingLine().LineNumber;
+        ReplayManager.Watch(start, end - start);
     }
 
 
-    private void OnReplayResultsChanged()
+    private void OnReplayLineChanged(int line, string msg)
     {
         View.VisualElement.Dispatcher.BeginInvoke((Action)delegate
         {
-            View.GetAdornmentLayer(nameof(ReplayAdornment)).RemoveAllAdornments();
-            CreateAdornments(View.TextViewLines);
+            var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == line) as TextBlock;
+            if (existing != null) { existing.Text = msg; return; }
+            var snapshotLine = View.TextSnapshot.GetLineFromLineNumber(line);
+            var span = new SnapshotSpan(snapshotLine.Start, snapshotLine.End);
+            var geometry = View.TextViewLines.GetMarkerGeometry(span);
+            if (geometry == null) return;
+            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {msg}" };
+            Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
+            Canvas.SetTop(adornment, geometry.Bounds.Top);
+            View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, span, line, adornment, null);
         });
     }
 
@@ -137,47 +135,73 @@ public sealed class ReplayAdornment
 }
 
 
-class ReplayManager : IDisposable
+class ReplayHostManager : IDisposable
 {
-    static Dictionary<string, ReplayManager> projects = new Dictionary<string, ReplayManager>();
+    static Dictionary<string, ReplayHostManager> projects = new Dictionary<string, ReplayHostManager>();
 
     int RefCount;
-    string FilePath;
+    string ProjectOutputFilePath;
     CancellationTokenSource Cancel;
     Task Task;
-    public ImmutableDictionary<int, string> Results = ImmutableDictionary<int, string>.Empty;
-    public event Action ResultsChanged;
+    //
+    int WatchLine, WatchLineCount;
+    TaskCompletionSource<object> WatchChanged;
+    public event Action<int, string> LineChanged;
 
-    public void TriggerReplayAsync(Project project)
+    public void TriggerReplayAsync(Document document)
     {
-        try { Cancel?.Cancel(); } catch (Exception) { Debug.WriteLine("oops"); }
+        Cancel?.Cancel();
         Cancel = new CancellationTokenSource();
-        Task = ReplayInnerAsync(project, Task, Cancel.Token);
+        Task = ReplayInnerAsync(document, Task, Cancel.Token);
     }
 
-    async Task ReplayInnerAsync(Project project, Task prevTask, CancellationToken cancel)
+    public void Watch(int line, int lineCount)
+    {
+        WatchLine = line;
+        WatchLineCount = lineCount;
+        WatchChanged?.TrySetResult(null);
+    }
+
+    async Task ReplayInnerAsync(Document document, Task prevTask, CancellationToken cancel)
     {
         if (prevTask != null) try { await prevTask; } catch (Exception) { }
-        if (project == null) return;
-        if (!File.Exists(project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
+        if (document == null) return;
+        if (!File.Exists(document.Project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
 
-        var project2 = await ReplayHost.InstrumentAsync(project, cancel);
-        var comp2 = await project2.GetCompilationAsync(cancel);
-        var results = await ReplayHost.RunAsync(project2, comp2, cancel);
-        if (results == null) return; // don't override in case of error
-        Results = results;
-        ResultsChanged?.Invoke();
+        var project = await ReplayHost.InstrumentAsync(document.Project, cancel);
+        var results = await ReplayHost.BuildAsync(project, cancel);
+        if (!results.Success) return; // don't wipe out the existing results in case of error
+        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel);
+        if (WatchLineCount != 0) host.Watch(document.FilePath, WatchLine, WatchLineCount);
+        WatchChanged = new TaskCompletionSource<object>();
+        var replayTask = host.ReadReplayAsync(cancel);
+        while (true)
+        {
+            await Task.WhenAny(WatchChanged.Task, replayTask);
+            if (WatchChanged.Task.IsCompleted)
+            {
+                host.Watch(document.FilePath, WatchLine, WatchLineCount);
+                WatchChanged = new TaskCompletionSource<object>();
+            }
+            else if (replayTask.IsCompleted)
+            {
+                var replay = await replayTask;
+                if (replay == null) return;
+                LineChanged?.Invoke(replay.Item1, replay.Item2);
+                replayTask = host.ReadReplayAsync(cancel);
+            }
+        }
     }
 
-    public static ReplayManager ForProject(string filePath)
+    public static ReplayHostManager Create(Project project)
     {
-        if (filePath == null) return null;
+        if (project == null || project.OutputFilePath == null) throw new ArgumentNullException(nameof(project));
         lock (projects)
         {
-            ReplayManager r;
-            if (projects.TryGetValue(filePath, out r)) { r.RefCount++; return r; }
-            r = new ReplayManager { RefCount = 1, FilePath = filePath };
-            projects[filePath] = r;
+            ReplayHostManager r;
+            if (projects.TryGetValue(project.OutputFilePath, out r)) { r.RefCount++; return r; }
+            r = new ReplayHostManager { RefCount = 1, ProjectOutputFilePath = project.OutputFilePath };
+            projects[project.OutputFilePath] = r;
             return r;
         }
     }
@@ -188,11 +212,11 @@ class ReplayManager : IDisposable
         // calls ForProject() and then disposes of it twice. The proper result is that they should only
         // decrement the refcount once (since Dispose is meant to be idempotent). But what will happen
         // here is it'll be decremented twice.
-        if (FilePath == null) return;
+        if (ProjectOutputFilePath == null) return;
         lock (this)
         {
             RefCount--;
-            if (RefCount == 0) { lock (projects) projects.Remove(FilePath); FilePath = null; Cancel?.Cancel(); }
+            if (RefCount == 0) { lock (projects) projects.Remove(ProjectOutputFilePath); ProjectOutputFilePath = null; Cancel?.Cancel(); }
         }
     }
 
