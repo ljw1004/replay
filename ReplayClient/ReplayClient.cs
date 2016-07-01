@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -53,15 +54,30 @@ namespace System.Runtime.CompilerServices
                     var line = lineTask.Result;
                     lineTask = Task.Run(SystemIn.ReadLineAsync);
                     if (line == null) Environment.Exit(1);
-                    var cmds = line.Split('\t');
-                    if (cmds[0] == "watch")
+                    var cmds = line.Split('\t').ToList();
+                    if (cmds[0] == "watch" || cmds[0] == "missing")
                     {
-                        watchFile = cmds[1]; watchLineStart = int.Parse(cmds[2]); watchLineLength = int.Parse(cmds[3]);
+                        HashSet<int> alreadyGot;
+                        if (watchLineStart == -1) alreadyGot = new HashSet<int>();
+                        else alreadyGot = new HashSet<int>(Enumerable.Range(watchLineStart, watchLineLength));
+                        //
+                        if (cmds[0] == "watch") { watchFile = cmds[1]; watchLineStart = int.Parse(cmds[2]); watchLineLength = int.Parse(cmds[3]); cmds.RemoveRange(0, 4); }
+                        //
+                        HashSet<int> need;
+                        if (watchLineStart == -1) need = new HashSet<int>();
+                        else need = new HashSet<int>(Enumerable.Range(watchLineStart, watchLineLength));
+                        //
+                        if (cmds.Count > 0 && cmds[0] == "missing")
+                        {
+                            for (int i = 1; i < cmds.Count; i++) alreadyGot.Remove(int.Parse(cmds[i]));
+                        }
+                        //
+                        need.ExceptWith(alreadyGot);
                         if (Database.ContainsKey(watchFile))
                         {
                             foreach (var kv in Database[watchFile])
                             {
-                                if (kv.Key >= watchLineStart && kv.Key < watchLineStart + watchLineLength) SystemOut.WriteLine($"{kv.Key}:{kv.Value}");
+                                if (need.Contains(kv.Key)) SystemOut.WriteLine($"{kv.Key}:{kv.Value}");
                             }
                         }
                     }

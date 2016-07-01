@@ -16,9 +16,11 @@ class ReplayHost : IDisposable
 {
     private Process Process;
 
-    public void Watch(string file, int line, int lineCount)
+    public void WatchAndMissing(string file, int line, int lineCount, IEnumerable<int> missing)
     {
-        Process.StandardInput.WriteLine($"watch\t{file}\t{line}\t{lineCount}");
+        var s = missing == null ? "" : string.Join("\t", missing);
+        if (s != "") s = "\tmissing\t" + s;
+        Process.StandardInput.WriteLine($"watch\t{file}\t{line}\t{lineCount}{s}");
     }
 
     public async Task<Tuple<int,string>> ReadReplayAsync(CancellationToken cancel)

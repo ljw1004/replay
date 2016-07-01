@@ -30,7 +30,7 @@ class Program
         var cts = new CancellationTokenSource();
         var task = Runner(host, cts.Token);
         Console.WriteLine($"> watch {document.FilePath} 1 40");
-        host.Watch(document.FilePath, 1, 40);
+        host.WatchAndMissing(document.FilePath, 1, 40,null);
         while (true)
         {
             var cmd = await Task.Run(Console.In.ReadLineAsync);

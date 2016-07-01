@@ -100,7 +100,7 @@ public sealed class ReplayAdornment
 
         var start = View.TextViewLines.FirstVisibleLine.Start.GetContainingLine().LineNumber;
         var end = View.TextViewLines.LastVisibleLine.End.GetContainingLine().LineNumber;
-        ReplayManager.Watch(start, end - start);
+        ReplayManager.WatchAndMissing(start, end - start, e.NewOrReformattedLines.Select(line => line.Start.GetContainingLine().LineNumber));
     }
 
 
@@ -144,7 +144,7 @@ class ReplayHostManager : IDisposable
     CancellationTokenSource Cancel;
     Task Task;
     //
-    int WatchLine, WatchLineCount;
+    int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
     TaskCompletionSource<object> WatchChanged;
     public event Action<int, string> LineChanged;
 
@@ -155,10 +155,11 @@ class ReplayHostManager : IDisposable
         Task = ReplayInnerAsync(document, Task, Cancel.Token);
     }
 
-    public void Watch(int line, int lineCount)
+    public void WatchAndMissing(int line, int lineCount, IEnumerable<int> missing)
     {
         WatchLine = line;
         WatchLineCount = lineCount;
+        WatchMissing = missing.ToImmutableArray();
         WatchChanged?.TrySetResult(null);
     }
 
@@ -172,7 +173,7 @@ class ReplayHostManager : IDisposable
         var results = await ReplayHost.BuildAsync(project, cancel);
         if (!results.Success) return; // don't wipe out the existing results in case of error
         var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel);
-        if (WatchLineCount != 0) host.Watch(document.FilePath, WatchLine, WatchLineCount);
+        if (WatchLineCount != 0) host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, null);
         WatchChanged = new TaskCompletionSource<object>();
         var replayTask = host.ReadReplayAsync(cancel);
         while (true)
@@ -180,7 +181,7 @@ class ReplayHostManager : IDisposable
             await Task.WhenAny(WatchChanged.Task, replayTask);
             if (WatchChanged.Task.IsCompleted)
             {
-                host.Watch(document.FilePath, WatchLine, WatchLineCount);
+                host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, WatchMissing);
                 WatchChanged = new TaskCompletionSource<object>();
             }
             else if (replayTask.IsCompleted)
