@@ -9,7 +9,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -21,7 +20,7 @@ namespace MefRegistration
     using Microsoft.VisualStudio.Text.Editor;
 
     [Export(typeof(IWpfTextViewCreationListener)), ContentType("text"), TextViewRole(PredefinedTextViewRoles.Document)]
-    public sealed class ReplayAdornmentTextViewCreationListener : IWpfTextViewCreationListener
+    internal sealed class ReplayAdornmentTextViewCreationListener : IWpfTextViewCreationListener
     {
         // This class will be instantiated the first time a text document is opened. (That's because our VSIX manifest
         // lists this project, i.e. this DLL, and VS scans all such listed DLLs to find all types with the right attributes).
@@ -37,7 +36,7 @@ namespace MefRegistration
 }
 
 
-public sealed class ReplayAdornment
+internal sealed class ReplayAdornment
 {
     // VS integration
     readonly Microsoft.VisualStudio.Text.Editor.IWpfTextView View;
@@ -52,8 +51,6 @@ public sealed class ReplayAdornment
 
     public ReplayAdornment(Microsoft.VisualStudio.Text.Editor.IWpfTextView view)
     {
-        var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
-
         var componentModel = (Microsoft.VisualStudio.ComponentModelHost.IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel));
         Workspace = componentModel.GetService<Microsoft.VisualStudio.LanguageServices.VisualStudioWorkspace>();
 
@@ -165,20 +162,20 @@ class ReplayHostManager : IDisposable
 
     async Task ReplayInnerAsync(Document document, Task prevTask, CancellationToken cancel)
     {
-        if (prevTask != null) try { await prevTask; } catch (Exception) { }
+        if (prevTask != null) try { await prevTask.ConfigureAwait(false); } catch (Exception) { }
         if (document == null) return;
         if (!File.Exists(document.Project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
 
-        var project = await ReplayHost.InstrumentAsync(document.Project, cancel);
-        var results = await ReplayHost.BuildAsync(project, cancel);
+        var project = await ReplayHost.InstrumentProjectAsync(document.Project, cancel).ConfigureAwait(false);
+        var results = await ReplayHost.BuildAsync(project, cancel).ConfigureAwait(false);
         if (!results.Success) return; // don't wipe out the existing results in case of error
-        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel);
+        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
         if (WatchLineCount != 0) host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, null);
         WatchChanged = new TaskCompletionSource<object>();
         var replayTask = host.ReadReplayAsync(cancel);
         while (true)
         {
-            await Task.WhenAny(WatchChanged.Task, replayTask);
+            await Task.WhenAny(WatchChanged.Task, replayTask).ConfigureAwait(false);
             if (WatchChanged.Task.IsCompleted)
             {
                 host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, WatchMissing);
@@ -186,7 +183,7 @@ class ReplayHostManager : IDisposable
             }
             else if (replayTask.IsCompleted)
             {
-                var replay = await replayTask;
+                var replay = await replayTask.ConfigureAwait(false);
                 if (replay == null) return;
                 LineChanged?.Invoke(replay.Item1, replay.Item2);
                 replayTask = host.ReadReplayAsync(cancel);

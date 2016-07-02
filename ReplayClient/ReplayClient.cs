@@ -55,7 +55,11 @@ namespace System.Runtime.CompilerServices
                     lineTask = Task.Run(SystemIn.ReadLineAsync);
                     if (line == null) Environment.Exit(1);
                     var cmds = line.Split('\t').ToList();
-                    if (cmds[0] == "watch" || cmds[0] == "missing")
+                    if (cmds[0] == "files")
+                    {
+                        foreach (var file in Database.Keys) SystemOut.WriteLine($"-1:{file}");
+                    }
+                    else if (cmds[0] == "watch" || cmds[0] == "missing")
                     {
                         HashSet<int> alreadyGot;
                         if (watchLineStart == -1) alreadyGot = new HashSet<int>();

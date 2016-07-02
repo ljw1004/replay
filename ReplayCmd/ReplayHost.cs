@@ -23,13 +23,13 @@ class ReplayHost : IDisposable
         Process.StandardInput.WriteLine($"watch\t{file}\t{line}\t{lineCount}{s}");
     }
 
-    public async Task<Tuple<int,string>> ReadReplayAsync(CancellationToken cancel)
+    public async Task<Tuple<int, string>> ReadReplayAsync(CancellationToken cancel)
     {
         var lineTask = Process.StandardOutput.ReadLineAsync();
         var tcs = new TaskCompletionSource<object>();
-        using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task);
+        using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task).ConfigureAwait(false);
         if (!lineTask.IsCompleted) return null;
-        var line = await lineTask;
+        var line = await lineTask.ConfigureAwait(false);
         var separator = line.IndexOf(':');
         int i;
         if (separator == -1 || !int.TryParse(line.Substring(0, separator), out i)) return Tuple.Create(-1, $"host can't parse target's output '{line}'");
@@ -42,24 +42,25 @@ class ReplayHost : IDisposable
         if (Process != null) Process.Dispose(); Process = null;
     }
 
-    public static async Task<Project> InstrumentAsync(Project originalProject, CancellationToken cancel = default(CancellationToken))
+    public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel = default(CancellationToken))
     {
-        var originalComp = await originalProject.GetCompilationAsync(cancel);
-        var replay = originalComp.GetTypeByMetadataName("System.Runtime.CompilerServices.Replay");
-
         var project = originalProject;
         foreach (var documentId in originalProject.DocumentIds)
         {
-            var oldDocument = project.GetDocument(documentId);
-            var oldTree = await oldDocument.GetSyntaxTreeAsync(cancel);
-            var oldRoot = await oldTree.GetRootAsync(cancel);
-            var rewriter = new TreeRewriter(originalComp, oldTree);
-            var newRoot = rewriter.Visit(oldRoot);
-            var newDocument = oldDocument.WithSyntaxRoot(newRoot);
-            project = newDocument.Project;
+            var document = await InstrumentDocumentAsync(project.GetDocument(documentId)).ConfigureAwait(false);
+            project = document.Project;
         }
-
         return project;
+    }
+
+    public static async Task<Document> InstrumentDocumentAsync(Document document, CancellationToken cancel = default(CancellationToken))
+    {
+        var oldComp = await document.Project.GetCompilationAsync(cancel).ConfigureAwait(false);
+        var oldTree = await document.GetSyntaxTreeAsync(cancel).ConfigureAwait(false);
+        var oldRoot = await oldTree.GetRootAsync(cancel).ConfigureAwait(false);
+        var rewriter = new TreeRewriter(oldComp, oldTree);
+        var newRoot = rewriter.Visit(oldRoot);
+        return document.WithSyntaxRoot(newRoot);
     }
 
     public class BuildResult
@@ -87,8 +88,8 @@ class ReplayHost : IDisposable
             if (!File.Exists(fn)) break;
         }
 
-        var comp = await project.GetCompilationAsync(cancel);
-        var result = await Task.Run(() => comp.Emit(fn, cancellationToken: cancel));
+        var comp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
+        var result = await Task.Run(() => comp.Emit(fn, cancellationToken: cancel)).ConfigureAwait(false);
         return new BuildResult(result, fn);
     }
 
@@ -107,9 +108,9 @@ class ReplayHost : IDisposable
             //process.WaitForInputIdle();
             var lineTask = process.StandardOutput.ReadLineAsync();
             var tcs = new TaskCompletionSource<object>();
-            using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task);
+            using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task).ConfigureAwait(false);
             cancel.ThrowIfCancellationRequested();
-            var line = await lineTask;
+            var line = await lineTask.ConfigureAwait(false);
             if (line != "OK") throw new Exception($"Expecting 'OK', got '{line}'");
             var host = new ReplayHost { Process = process };
             process = null;
@@ -274,14 +275,5 @@ class TreeRewriter : CSharpSyntaxRewriter
                     }));
         var invocation = SyntaxFactory.InvocationExpression(log, args);
         return invocation;
-    }
-}
-
-
-namespace System.Runtime.CompilerServices
-{
-    public class Replay
-    {
-        public static T Log<T>(T data, string id, string file, int line, int reason) => data;
     }
 }
