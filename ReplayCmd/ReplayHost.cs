@@ -20,7 +20,9 @@ class ReplayHost : IDisposable
     {
         var s = missing == null ? "" : string.Join("\t", missing);
         if (s != "") s = "\tmissing\t" + s;
-        Process.StandardInput.WriteLine($"watch\t{file}\t{line}\t{lineCount}{s}");
+        var cmd = $"watch\t{file}\t{line}\t{lineCount}{s}";
+        Debug.WriteLine("> " + cmd);
+        Process.StandardInput.WriteLine(cmd);
     }
 
     public async Task<Tuple<int, string>> ReadReplayAsync(CancellationToken cancel)
@@ -30,6 +32,7 @@ class ReplayHost : IDisposable
         using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task).ConfigureAwait(false);
         if (!lineTask.IsCompleted) return null;
         var line = await lineTask.ConfigureAwait(false);
+        Debug.WriteLine(line);
         var separator = line.IndexOf(':');
         int i;
         if (separator == -1 || !int.TryParse(line.Substring(0, separator), out i)) return Tuple.Create(-1, $"host can't parse target's output '{line}'");
@@ -144,13 +147,64 @@ class TreeRewriter : CSharpSyntaxRewriter
         => node.WithStatements(SyntaxFactory.List(ReplaceStatements(node.Statements)));
 
     public override SyntaxNode VisitSwitchSection(SwitchSectionSyntax node)
-        => node.WithStatements(VisitList(SyntaxFactory.List(ReplaceStatements(node.Statements))));
+        => node.WithStatements(SyntaxFactory.List(ReplaceStatements(node.Statements)));
 
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
+        => node.Identifier.Text == "Replay" ? node : base.VisitClassDeclaration(node);
+
+    public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
     {
-        if (node.Identifier.Text == "Replay") return node;
-        else return base.VisitClassDeclaration(node);
+        var members = ReplaceMembers(node.Members);
+        if (OriginalTree.Options.Kind == SourceCodeKind.Script)
+        {
+            var expr = SyntaxFactory_Log(null, null, null, null, -1);
+            var member = SyntaxFactory.GlobalStatement(SyntaxFactory.ExpressionStatement(expr));
+            members = new [] { member }.Concat(members);
+        }
+        return node.WithMembers(SyntaxFactory.List(members));
     }
+        
+
+    IEnumerable<MemberDeclarationSyntax> ReplaceMembers(IEnumerable<MemberDeclarationSyntax> members)
+    {
+        foreach (var member in members)
+        {
+            if (member.IsKind(SyntaxKind.GlobalStatement))
+            {
+                foreach (var statement in ReplaceStatements(new[] { (member as GlobalStatementSyntax).Statement }))
+                {
+                    yield return SyntaxFactory.GlobalStatement(statement);
+                }
+            }
+            else if (member.IsKind(SyntaxKind.FieldDeclaration))
+            {
+                yield return Visit(member) as FieldDeclarationSyntax;
+            }
+            else
+            {
+                yield return Visit(member) as MemberDeclarationSyntax;
+            }
+        }
+    }
+
+    public override SyntaxNode VisitVariableDeclaration(VariableDeclarationSyntax declaration)
+    {
+        var type = SemanticModel.GetSymbolInfo(declaration.Type).Symbol as ITypeSymbol;
+        if (type == null) return declaration;
+        var variables = declaration.Variables;
+        var locs = variables.Select(v => v.GetLocation()).ToArray();
+        for (int i = 0; i < variables.Count; i++)
+        {
+            var oldVariable = variables[i];
+            if (oldVariable.Initializer == null) continue;
+            var id = oldVariable.Identifier.ValueText;
+            var newValue = SyntaxFactory_Log(type, oldVariable.Initializer.Value, id, locs[i], 1);
+            var newVariable = oldVariable.WithInitializer(oldVariable.Initializer.WithValue(newValue));
+            variables = variables.Replace(oldVariable, newVariable);
+        }
+        return declaration.WithVariables(variables);
+    }
+
 
     IEnumerable<StatementSyntax> ReplaceStatements(IEnumerable<StatementSyntax> statements)
     {
@@ -197,27 +251,15 @@ class TreeRewriter : CSharpSyntaxRewriter
         {
             var statement1 = Visit(statement0) as StatementSyntax;
 
-            if (statement1.IsKind(SyntaxKind.LocalDeclarationStatement))
-            {
-                // int x, y=10 -> int x,y=Log<type>(10,"y",...,1);
-                var statement = statement1 as LocalDeclarationStatementSyntax;
-                var type = SemanticModel.GetSymbolInfo(statement.Declaration.Type).Symbol as ITypeSymbol;
-                if (type == null) { yield return statement; continue; }
-                var variables = statement.Declaration.Variables;
-                var locs = variables.Select(v => v.GetLocation()).ToArray();
-                for (int i = 0; i < variables.Count; i++)
-                {
-                    var oldVariable = variables[i];
-                    if (oldVariable.Initializer == null) continue;
-                    var id = oldVariable.Identifier.ValueText;
-                    var newValue = SyntaxFactory_Log(type, oldVariable.Initializer.Value, id, locs[i], 1);
-                    var newVariable = oldVariable.WithInitializer(oldVariable.Initializer.WithValue(newValue));
-                    variables = variables.Replace(oldVariable, newVariable);
-                }
-                var newStatement = statement.WithDeclaration(statement.Declaration.WithVariables(variables));
-                yield return newStatement;
-            }
-            else if (statement1.IsKind(SyntaxKind.ExpressionStatement))
+            //if (statement1.IsKind(SyntaxKind.LocalDeclarationStatement))
+            //{
+            //    // int x, y=10 -> int x,y=Log<type>(10,"y",...,1);
+            //    var statement = statement1 as LocalDeclarationStatementSyntax;
+            //    var declaration = VisitVariableDeclaration(statement.Declaration) as VariableDeclarationSyntax;
+            //    yield return statement.WithDeclaration(declaration);
+            //}
+            //else
+            if (statement1.IsKind(SyntaxKind.ExpressionStatement))
             {
                 // f(); -> Log(f(),null,...,2) or f();Log(null,null,...,3);
                 var statement = statement1 as ExpressionStatementSyntax;
@@ -251,6 +293,8 @@ class TreeRewriter : CSharpSyntaxRewriter
 
         if (type == null && expr == null) type = Compilation.GetSpecialType(SpecialType.System_Object);
         if (expr == null) expr = SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
+        string file = (loc == null) ? null : loc.SourceTree.FilePath;
+        int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
 
         var typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString());
         var replay = SyntaxFactory.QualifiedName(
@@ -269,8 +313,8 @@ class TreeRewriter : CSharpSyntaxRewriter
         var args = SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(new[] {
                         SyntaxFactory.Argument(expr),
                         SyntaxFactory.Argument(id == null ? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression) : SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(id))),
-                        SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(loc.SourceTree.FilePath))),
-                        SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, SyntaxFactory.Literal(loc.GetMappedLineSpan().StartLinePosition.Line))),
+                        SyntaxFactory.Argument(file == null ? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression) : SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(file))),
+                        SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, SyntaxFactory.Literal(line))),
                         SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, SyntaxFactory.Literal(reason)))
                     }));
         var invocation = SyntaxFactory.InvocationExpression(log, args);

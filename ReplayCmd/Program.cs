@@ -28,7 +28,7 @@ class Program
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
-    static async Task MainAsync()
+    static async Task TestProjectAsync()
     {
         var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
         var solution = await workspace.OpenSolutionAsync(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\ConsoleApplicationCS.sln");

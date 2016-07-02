@@ -92,12 +92,12 @@ internal sealed class ReplayAdornment
         if (docVersion != ReplayDocumentVersionStamp)
         {
             ReplayDocumentVersionStamp = docVersion;
-            ReplayManager.TriggerReplayAsync(document);
+            ReplayManager.TriggerReplayAsync(document.Project);
         }
 
         var start = View.TextViewLines.FirstVisibleLine.Start.GetContainingLine().LineNumber;
         var end = View.TextViewLines.LastVisibleLine.End.GetContainingLine().LineNumber;
-        ReplayManager.WatchAndMissing(start, end - start, e.NewOrReformattedLines.Select(line => line.Start.GetContainingLine().LineNumber));
+        ReplayManager.WatchAndMissing(document, start, end - start, e.NewOrReformattedLines.Select(line => line.Start.GetContainingLine().LineNumber));
     }
 
 
@@ -141,36 +141,37 @@ class ReplayHostManager : IDisposable
     CancellationTokenSource Cancel;
     Task Task;
     //
-    int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
+    string WatchFile;  int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
     TaskCompletionSource<object> WatchChanged;
     public event Action<int, string> LineChanged;
 
-    public void TriggerReplayAsync(Document document)
+    public void TriggerReplayAsync(Project project)
     {
         Cancel?.Cancel();
         Cancel = new CancellationTokenSource();
-        Task = ReplayInnerAsync(document, Task, Cancel.Token);
+        Task = ReplayInnerAsync(project, Task, Cancel.Token);
     }
 
-    public void WatchAndMissing(int line, int lineCount, IEnumerable<int> missing)
+    public void WatchAndMissing(Document document, int line, int lineCount, IEnumerable<int> missing)
     {
+        WatchFile = document.FilePath;
         WatchLine = line;
         WatchLineCount = lineCount;
         WatchMissing = missing.ToImmutableArray();
         WatchChanged?.TrySetResult(null);
     }
 
-    async Task ReplayInnerAsync(Document document, Task prevTask, CancellationToken cancel)
+    async Task ReplayInnerAsync(Project project, Task prevTask, CancellationToken cancel)
     {
         if (prevTask != null) try { await prevTask.ConfigureAwait(false); } catch (Exception) { }
-        if (document == null) return;
-        if (!File.Exists(document.Project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
+        if (project == null) return;
+        if (!File.Exists(project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
 
-        var project = await ReplayHost.InstrumentProjectAsync(document.Project, cancel).ConfigureAwait(false);
+        project = await ReplayHost.InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
         var results = await ReplayHost.BuildAsync(project, cancel).ConfigureAwait(false);
         if (!results.Success) return; // don't wipe out the existing results in case of error
         var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
-        if (WatchLineCount != 0) host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, null);
+        if (WatchLineCount != 0) host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, null);
         WatchChanged = new TaskCompletionSource<object>();
         var replayTask = host.ReadReplayAsync(cancel);
         while (true)
@@ -178,7 +179,7 @@ class ReplayHostManager : IDisposable
             await Task.WhenAny(WatchChanged.Task, replayTask).ConfigureAwait(false);
             if (WatchChanged.Task.IsCompleted)
             {
-                host.WatchAndMissing(document.FilePath, WatchLine, WatchLineCount, WatchMissing);
+                host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, WatchMissing);
                 WatchChanged = new TaskCompletionSource<object>();
             }
             else if (replayTask.IsCompleted)

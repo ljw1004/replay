@@ -25,8 +25,6 @@ namespace System.Runtime.CompilerServices
             thread.Start();
         }
 
-        public static void BeThere() { }
-
         private class HookOut : TextWriter
         {
             StringBuilder sb = new StringBuilder();
@@ -58,6 +56,17 @@ namespace System.Runtime.CompilerServices
                     if (cmds[0] == "files")
                     {
                         foreach (var file in Database.Keys) SystemOut.WriteLine($"-1:{file}");
+                    }
+                    else if (cmds[0] == "dump" || cmds[0] == "database")
+                    {
+                        foreach (var kv in Database)
+                        {
+                            SystemOut.WriteLine($"-1:{kv.Key}");
+                            foreach (var lm in kv.Value)
+                            {
+                                SystemOut.WriteLine($"{lm.Key}:{lm.Value}");
+                            }
+                        }
                     }
                     else if (cmds[0] == "watch" || cmds[0] == "missing")
                     {
@@ -104,6 +113,7 @@ namespace System.Runtime.CompilerServices
 
         public static T Log<T>(T data, string id, string file, int line, int reason)
         {
+            if (data == null && id == null && file == null) return default(T);
             var s = MyOut.Log()?.Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
             if (s != null) Channel.Post(Tuple.Create(file, line, $"\"{s}\""));
             if (id != null) id = id + "=";
