@@ -1,0 +1,23 @@
+<html>
+<head>
+<style>
+html, body {width: 100vw; height:100vh;margin:0;padding:0; background-color:black; color:white;
+font-family:Segoe UI}
+a {color: cyan; text-decoration: underline;}
+a:visited {color: cyan; text-decoration: underline;}
+#menu {position:fixed; top:0; left:0; width:7em; height:100vh; padding:0; background-color:#222222;}
+#menu p {background-color:#3B3B3B; padding-left:1.5em; padding-top:0.3ex; padding-bottom:0.7ex; font-size:smaller;}
+#menu p a {color:white; text-decoration:none;}
+#menu p a:visited {color:white; text-decoration:none;}
+#container {position:fixed; top:0; left:7em; width:calc(100vw - 7em); height:100vh; background-color:#1E1E1E;}
+</style>
+</head>
+<body>
+<div id="menu">
+<p><a href="/project1/file1.csx">file1.csx</a></p>
+</div>
+<div id="container"></div>
+<script src="node_modules/monaco-editor/dev/vs/loader.js"></script>
+<script src="a.js"></script>
+</body>
+</html>

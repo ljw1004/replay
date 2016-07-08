@@ -191,6 +191,7 @@ ClientBin/
 *.pfx
 *.publishsettings
 node_modules/
+typings/
 orleans.codegen.cs
 
 # Since there are multiple workflows, uncomment next line to ignore bower_components
@@ -250,3 +251,7 @@ paket-files/
 # JetBrains Rider
 .idea/
 *.sln.iml
+
+# my project
+TestMonacoClient/a.js
+TestMonacoClient/a.js.map
