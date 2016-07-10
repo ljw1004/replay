@@ -8,6 +8,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,6 +22,12 @@ class ReplayHost : IDisposable
         var s = missing == null ? "" : string.Join("\t", missing);
         if (s != "") s = "\tmissing\t" + s;
         var cmd = $"watch\t{file}\t{line}\t{lineCount}{s}";
+        Debug.WriteLine("> " + cmd);
+        Process.StandardInput.WriteLine(cmd);
+    }
+
+    public void SendRawCommand(string cmd)
+    {
         Debug.WriteLine("> " + cmd);
         Process.StandardInput.WriteLine(cmd);
     }
@@ -48,6 +55,22 @@ class ReplayHost : IDisposable
     public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel = default(CancellationToken))
     {
         var project = originalProject;
+
+        var originalComp = await originalProject.GetCompilationAsync(cancel);
+        var replay = originalComp.GetTypeByMetadataName("System.Runtime.CompilerServices.Replay");
+        if (replay == null)
+        {
+            var fn = typeof(ReplayHost).GetTypeInfo().Assembly.Location;
+            for (; fn != null; fn = Path.GetDirectoryName(fn))
+            {
+                if (File.Exists(fn + "/ReplayClient.cs")) break;
+            }
+            if (fn == null) throw new Exception("class 'Replay' not found");
+            fn = fn + "/ReplayClient.cs";
+            var document = project.AddDocument("ReplayClient.cs", File.ReadAllText(fn), null, fn);
+            project = document.Project;
+        }
+
         foreach (var documentId in originalProject.DocumentIds)
         {
             var document = await InstrumentDocumentAsync(project.GetDocument(documentId)).ConfigureAwait(false);
@@ -82,13 +105,58 @@ class ReplayHost : IDisposable
 
     public static async Task<BuildResult> BuildAsync(Project project, CancellationToken cancel = default(CancellationToken))
     {
-        // Pick a filename
         string fn = "";
-        for (int i = 0; ; i++)
+
+        if (project.OutputFilePath != null)
         {
-            fn = Path.ChangeExtension(project.OutputFilePath, $".replay{(i == 0 ? "" : i.ToString())}.exe");
-            if (File.Exists(fn)) try { File.Delete(fn); } catch (Exception) { }
-            if (!File.Exists(fn)) break;
+            // is a regular app
+            for (int i = 0; ; i++)
+            {
+                fn = Path.ChangeExtension(project.OutputFilePath, $".replay{(i == 0 ? "" : i.ToString())}.exe");
+                if (File.Exists(fn)) try { File.Delete(fn); } catch (Exception) { }
+                if (!File.Exists(fn)) break;
+            }
+        }
+        else
+        {
+            // is .NETCore app
+            // (1) if directory "bin/debug/netcoreapp1.0" doesn't exist then create it by doing "dotnet build"
+            var dir = Path.GetDirectoryName(project.FilePath);
+            var bindir = dir + "/bin/Debug/netcoreapp1.0";
+            if (!Directory.Exists(bindir))
+            {
+                using (var process = new Process())
+                {
+                    process.StartInfo.FileName = "dotnet.exe";
+                    process.StartInfo.Arguments = "build";
+                    process.StartInfo.UseShellExecute = false;
+                    process.StartInfo.RedirectStandardOutput = true;
+                    process.StartInfo.CreateNoWindow = true;
+                    process.Start();
+                    var opTask = process.StandardOutput.ReadToEndAsync();
+                    using (var reg = cancel.Register(process.Kill)) await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
+                    cancel.ThrowIfCancellationRequested();
+                    var op = await opTask;
+                    if (!Directory.Exists(bindir)) throw new Exception("Failed to dotnet build - " + op);
+                }
+            }
+
+            // (2) pick a directory "obj/replay{n}/netcoreapp1.0" which we can use
+            var repdir = "";
+            for (int i = 0; ; i++)
+            {
+                repdir = $"{dir}/obj/Replay{(i == 0 ? "" : i.ToString())}/netcoreapp1.0";
+                fn = $"{repdir}/{project.AssemblyName}.dll";
+                if (File.Exists(fn)) try { File.Delete(fn); } catch (Exception) { }
+                if (!File.Exists(fn)) break;
+            }
+            if (!File.Exists($"{repdir}/{project.AssemblyName}.deps.json"))
+            {
+                Directory.CreateDirectory(repdir);
+                File.Copy($"{bindir}/{project.AssemblyName}.deps.json", $"{repdir}/{project.AssemblyName}.deps.json");
+                File.Copy($"{bindir}/{project.AssemblyName}.runtimeconfig.dev.json", $"{repdir}/{project.AssemblyName}.runtimeconfig.dev.json");
+                File.Copy($"{bindir}/{project.AssemblyName}.runtimeconfig.json", $"{repdir}/{project.AssemblyName}.runtimeconfig.json");
+            }
         }
 
         var comp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
@@ -98,17 +166,19 @@ class ReplayHost : IDisposable
 
     public static async Task<ReplayHost> RunAsync(string outputFilePath, CancellationToken cancel = default(CancellationToken))
     {
+        bool isCore = string.Compare(Path.GetExtension(outputFilePath), ".dll", true) == 0;
+
         Process process = null;
         try
         {
             process = new Process();
-            process.StartInfo.FileName = outputFilePath;
+            process.StartInfo.FileName = isCore ? "dotnet" : outputFilePath;
+            process.StartInfo.Arguments = isCore ? "exec \"" + outputFilePath + "\"" : null;
             process.StartInfo.UseShellExecute = false;
             process.StartInfo.RedirectStandardOutput = true;
             process.StartInfo.RedirectStandardInput = true;
             process.StartInfo.CreateNoWindow = true;
             process.Start();
-            //process.WaitForInputIdle();
             var lineTask = process.StandardOutput.ReadLineAsync();
             var tcs = new TaskCompletionSource<object>();
             using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task).ConfigureAwait(false);

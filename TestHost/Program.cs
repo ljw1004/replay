@@ -14,7 +14,15 @@ class Program
 {
     static void Main()
     {
-        TestScriptAsync().GetAwaiter().GetResult();
+        //TestProjectAsync().GetAwaiter().GetResult();
+
+        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApp1");
+        var solution = workspace.CurrentSolution; 
+        var project = solution.Projects.Single();
+        project = project.AddDocument("a.csx", "").WithSourceCodeKind(SourceCodeKind.Script).Project;
+        var comp = project.GetCompilationAsync().Result;
+        foreach (var d in comp.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
+            Console.WriteLine(d.GetMessage());
     }
 
     static async Task TestScriptAsync()
@@ -30,13 +38,29 @@ class Program
 
     static async Task TestProjectAsync()
     {
-        var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
-        var solution = await workspace.OpenSolutionAsync(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\ConsoleApplicationCS.sln");
-        var project = await ReplayHost.InstrumentProjectAsync(solution.Projects.Single());
-        var document = project.Documents.FirstOrDefault(d => Path.GetFileName(d.FilePath) == "Program.cs");
+        //var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
+        //var solution = await workspace.OpenSolutionAsync(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\ConsoleApplicationCS.sln");
+        //var project = solution.Projects.Single();
+
+        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApp1");
+        var solution = workspace.CurrentSolution;
+        var project = solution.Projects.Single();
+
+        var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
+        project = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
+
+        project = await ReplayHost.InstrumentProjectAsync(project);
+
+        var document = project.Documents.FirstOrDefault(d => Path.GetFileName(d.FilePath) == "a.csx");
         if (document != null) Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
         var result = await ReplayHost.BuildAsync(project);
-        foreach (var d in result.Diagnostics) if (d.Severity == DiagnosticSeverity.Error || d.Severity == DiagnosticSeverity.Warning) Console.WriteLine($"{Path.GetFileName(d.Location.SourceTree.FilePath)}({d.Location.GetMappedLineSpan().StartLinePosition.Line}):{d.GetMessage()}");
+        foreach (var d in result.Diagnostics)
+        {
+            if (d.Severity != DiagnosticSeverity.Error && d.Severity != DiagnosticSeverity.Warning) continue;
+            var path = d.Location.IsInSource ? Path.GetFileName(d.Location.SourceTree.FilePath) : "";
+            var line = d.Location.IsInSource ? d.Location.GetMappedLineSpan().StartLinePosition.Line.ToString() : "";
+            Console.WriteLine($"{path}({line}):{d.GetMessage()}");
+        }
         if (!result.Success) return;
         var host = await ReplayHost.RunAsync(result.ReplayOutputFilePath);
         var cts = new CancellationTokenSource();

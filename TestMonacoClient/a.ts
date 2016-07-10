@@ -1,5 +1,13 @@
 /// <reference path="node_modules/monaco-editor/monaco.d.ts"/>
 
+function log(o:any):void
+{
+    var s = JSON.stringify(o);
+    console.log(s);
+    var e = document.getElementById("log");
+    e.innerText = s + "\n" + e.innerText;
+}
+
 class Channel<T>
 {
     _posts:T[] = [];  
@@ -28,7 +36,7 @@ require(['vs/editor/editor.main'], function() {
         roundedSelection:true,
         theme:"vs-dark"
     });
-    connection = new WebSocket('ws://localhost:60828');
+    connection = new WebSocket('ws://localhost:60828/project1');
     connection.onopen = function() {};
     connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
     connection.onerror = function(ev:Event) {stdin.post(null); }
@@ -41,15 +49,15 @@ require(['vs/editor/editor.main'], function() {
 
 function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2):void
 {
-    console.log(e);
+    log(e);
 }
 
 async function startDialog():Promise<void>
 {
-    connection.send("OK");
     var ok = await stdin.recv();
-    if (ok != "OK") {console.log(`error: expected 'OK', got '${ok}'`); return;}
-    connection.send("get code1.csx");
+    if (ok != "OK") {log(`error: expected 'OK', got '${ok}'`); return;}
+    connection.send("OK");
+    connection.send("GET\tcode1.csx");
     var txt = await stdin.recv();
     txt = txt.replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
     editor.getModel().setValue(txt);

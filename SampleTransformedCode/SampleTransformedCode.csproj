@@ -44,8 +44,10 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\ReplayClient.cs">
+      <Link>ReplayClient.cs</Link>
+    </Compile>
     <Compile Include="Program.cs" />
-    <Compile Include="ReplayClient.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="project.json" />

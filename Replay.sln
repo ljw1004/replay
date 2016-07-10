@@ -8,13 +8,12 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestHost", "TestHost\TestHost.csproj", "{1D0462CB-0A86-4F1E-8AB5-BFCF9B40B7B5}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{680BB5F5-50E1-49F7-8556-6DB9A78B00F9}"
-	ProjectSection(SolutionItems) = preProject
-		..\..\..\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\Program.cs = ..\..\..\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\Program.cs
-	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SampleTransformedCode", "SampleTransformedCode\SampleTransformedCode.csproj", "{5874687D-070A-4FC6-AC63-F5AAE9D2DF17}"
 EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestWebsocketService", "TestWebsocketService\TestWebsocketService.xproj", "{961CABB7-1BF0-4D1C-996D-09BA52C8F078}"
+EndProject
+Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestHostCore", "TestHostCore\TestHostCore.xproj", "{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -38,6 +37,10 @@ Global
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

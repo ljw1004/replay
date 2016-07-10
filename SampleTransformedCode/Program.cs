@@ -10,7 +10,7 @@ class Program
 
     static void Main()
     {
-        Replay.BeThere();
+        Replay.Log<object>(null, null, null, -1, -1);
 
         Replay.Log("hello", "x", "file.cs", 10, 1);
         Thread.Sleep(TimeSpan.FromSeconds(20));

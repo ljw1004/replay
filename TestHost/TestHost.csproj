@@ -44,8 +44,10 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\TestHostCore\ReplayHost.cs">
+      <Link>ReplayHost.cs</Link>
+    </Compile>
     <Compile Include="Program.cs" />
-    <Compile Include="ReplayHost.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="project.json" />
