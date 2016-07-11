@@ -22,13 +22,11 @@ class ReplayHost : IDisposable
         var s = missing == null ? "" : string.Join("\t", missing);
         if (s != "") s = "\tmissing\t" + s;
         var cmd = $"watch\t{file}\t{line}\t{lineCount}{s}";
-        Debug.WriteLine("> " + cmd);
         Process.StandardInput.WriteLine(cmd);
     }
 
     public void SendRawCommand(string cmd)
     {
-        Debug.WriteLine("> " + cmd);
         Process.StandardInput.WriteLine(cmd);
     }
 
