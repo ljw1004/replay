@@ -27,6 +27,7 @@ class Channel<T>
 var editor : monaco.editor.IStandaloneCodeEditor;
 var stdin = new Channel<string>();
 var connection : WebSocket;
+var ignoreModelDidChangeContent : boolean = false;
 
 
 require.config({ paths: { 'vs': 'node_modules/monaco-editor/dev/vs'}});
@@ -49,7 +50,11 @@ require(['vs/editor/editor.main'], function() {
 
 function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2):void
 {
-    log(e);
+    if (ignoreModelDidChangeContent) return;
+    var pos = new monaco.Position(e.range.startLineNumber, e.range.startColumn);
+    var offset = editor.getModel().getOffsetAt(pos);
+    var s = e.text.replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n");
+    connection.send(`CHANGE\tcode1.csx\t${offset}\t${e.rangeLength}\t${s}`);
 }
 
 async function startDialog():Promise<void>
@@ -60,5 +65,13 @@ async function startDialog():Promise<void>
     connection.send("GET\tcode1.csx");
     var txt = await stdin.recv();
     txt = txt.replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
+    ignoreModelDidChangeContent = true;
     editor.getModel().setValue(txt);
+    ignoreModelDidChangeContent = false;
+    while (true)
+    {
+        var resp = await stdin.recv();
+        if (resp === null) return;
+        log(resp);
+    }
 }

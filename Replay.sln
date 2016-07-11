@@ -13,8 +13,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SampleTransformedCode", "Sa
 EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestWebsocketService", "TestWebsocketService\TestWebsocketService.xproj", "{961CABB7-1BF0-4D1C-996D-09BA52C8F078}"
 EndProject
-Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestHostCore", "TestHostCore\TestHostCore.xproj", "{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -37,10 +35,6 @@ Global
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{961CABB7-1BF0-4D1C-996D-09BA52C8F078}.Release|Any CPU.Build.0 = Release|Any CPU
-		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{FF748A06-8427-4BFA-97B9-4B8FB4AB1D85}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
