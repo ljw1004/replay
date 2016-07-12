@@ -12,43 +12,272 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 
-class ReplayHost : IDisposable
+// Client <-> Host <-> Editor
+// The host is always on the same machine as the replayer. They communicate by serialization (to ensure clean teardown)
+// The host and editor are in the same process (VSIX) or on remote machines (online).
+// The host can trigger the client to shut down and a new client to launch.
+
+// DESIGN CONSIDERATIONS
+// Scenario: You have a file with replays shown, and you press "enter" to insert a line.
+//           Should the adornments be hidden until the file is re-executed? -- no.
+// Scenario: You have a file with replays shown, and you press "enter" which breaks a line and prevents building.
+//           Should the adornments be hidden until the error is fixed? -- no.
+// These get to the question of *when does an adornment get removed?*. The answer is, when you edit a line the adornment
+// gets removed, and it doesn't get restored until the line of code re-runs.
+// Scenario: You have an invocation fred() where fred is a non-logging helper method whose effect is to write to the console, so
+//           that console write is shown at the invocation. Then you edit the helper method
+//           to no longer print. When does the annotation at the invocation get removed? -- only
+//           when the execution is guaranteed finished.
+
+// WHO KNOWS WHAT
+// Client: Each successive client instance builds up a database of logs that it has executed so far.
+//         It also knows what range the host is currently watching, and the hashes the host has within that range.
+//   Host: It has a persistent database of adornments (log + synthesized ID) for each one.
+//         It also knows what range the editor is currently watching.
+// Editor: It has a persistent database of adornments.
+
+// CLIENT-INITIATED EVENTS
+// * When client executes a new log, it adds to the database. If the log is within the host's watched range
+//   then client notifies the host.
+//   < REPLAY add line hash text
+//   The host wil synthesize an ID, modify its database, and notifies the editor.
+//   < REPLAY add line id text
+//   The editor will modify its database and display onscreen.
+// * When client reaches the end of its execution, it will send "removes" for anything in the watcher
+//   database which isn't in the client database.
+//   < REPLAY remove line
+//   The host will remove them from its database, and pass them on to the editor.
+//   < REPLAY remove line id
+//   The editor will remove them from its database and screen
+
+// EDITOR-INITIATED EVENTS
+// * When editor has a text-change, this (1) removes affected adornments from screen and database, (2) shifts following
+//   adornments up or down a line, (3) notifies the host.
+//   > CHANGE file offset length text
+//   The host will remove affected adornments from database, shift following adornments, update its Document model,
+//   tear down the current client, launch a new client, and tell it the watch range plus what's in its database.
+//   > WATCH file line count nhashes line0 hash0 ... lineN hashN
+//   The cient will update its notion of what range the host is watching and what the host knows, and will send any
+//   additions/modifications it sees fit (but no removals)
+//   < REPLAY add line hash text
+//   The host will respond to this as above.
+// * When editor scrolls more lines into view, this (1) puts adornments onscreen based on what's in the editor's database,
+//   (2) notifies the host of the new range.
+//   > WATCH file line count
+//   The host will notify the client of the new range also telling the client what things are in the editor's database
+//   that weren't already known by the client
+//   > WATCH file line count nhashes ...
+//   The client will send add/modify notifications as needed (but no removals)
+//   < REPLAY add line hash text
+//   The host will respond to this as above.
+
+// MISC EVENTS
+// * The client also recognizes a debugging command
+//   > DUMP
+//   It responds with a complete dump of its database
+//   < DUMP file line text
+// * The client also recognizes another debugging command
+//   > FILES
+//   It responds with a list of its files
+//   < FILE file
+
+
+class ReplayHostInstance : IDisposable
 {
     private Process Process;
 
-    public void WatchAndMissing(string file, int line, int lineCount, IEnumerable<int> missing)
+    private async Task PostLineAsync(string cmd, CancellationToken cancel = default(CancellationToken))
     {
-        var s = missing == null ? "" : string.Join("\t", missing);
-        if (s != "") s = "\tmissing\t" + s;
-        var cmd = $"watch\t{file}\t{line}\t{lineCount}{s}";
-        Process.StandardInput.WriteLine(cmd);
+        if (Process?.HasExited == true) throw new InvalidOperationException("Process has exited");
+        using (var reg = cancel.Register(Process.Kill)) await Process.StandardInput.WriteLineAsync(cmd);
     }
 
-    public void SendRawCommand(string cmd)
+    private async Task<string> ReadLineAsync(CancellationToken cancel = default(CancellationToken))
     {
-        Process.StandardInput.WriteLine(cmd);
-    }
-
-    public async Task<Tuple<int, string>> ReadReplayAsync(CancellationToken cancel)
-    {
-        var lineTask = Process.StandardOutput.ReadLineAsync();
-        var tcs = new TaskCompletionSource<object>();
-        using (var reg = cancel.Register(tcs.SetCanceled)) await Task.WhenAny(lineTask, tcs.Task).ConfigureAwait(false);
-        if (!lineTask.IsCompleted) return null;
-        var line = await lineTask.ConfigureAwait(false);
-        Debug.WriteLine(line);
-        var separator = line.IndexOf(':');
-        int i;
-        if (separator == -1 || !int.TryParse(line.Substring(0, separator), out i)) return Tuple.Create(-1, $"host can't parse target's output '{line}'");
-        return Tuple.Create(i, line.Substring(separator + 1));
+        if (Process?.HasExited == true) throw new InvalidOperationException("Process has exited");
+        using (var reg = cancel.Register(Process.Kill)) return await Process.StandardOutput.ReadLineAsync();
     }
 
     public void Dispose()
     {
-        if (Process != null && !Process.HasExited) { Process.Kill(); Process.WaitForExit(); }
+        if (Process?.HasExited == false) { Process.Kill(); Process.WaitForExit(); }
         if (Process != null) Process.Dispose(); Process = null;
     }
+
+    public async Task DisposeAsync()
+    {
+        if (Process?.HasExited == false) { Process.Kill(); await Task.Run(() => Process.WaitForExit()); }
+        if (Process != null) Process.Dispose(); Process = null;
+    }
+}
+
+class ReplayHost : IDisposable
+{
+    private BufferBlock<Tuple<string, Project>> Queue = new BufferBlock<Tuple<string, Project>>();
+
+    public delegate void AdornmentChangedHandler(bool isAdd, int id, int line, string content, TaskCompletionSource<object> deferral);
+    public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral);
+    public event AdornmentChangedHandler OnAdornmentChange;
+    public event ReplayHostError OnError;
+
+    public void DocumentHasChanged(Project project, int line, int count, int newcount) => Queue.Post(Tuple.Create($"CHANGE\t{line}\t{count}\t{newcount}", project));
+    public void ViewHasChanged(int line, int count) => Queue.Post(Tuple.Create($"WATCH\t{line}\t{count}", (Project)null));
+
+    private Task SendAdornmentChangeAsync(bool isAdd, int id, int line, string content)
+    {
+        var c = OnAdornmentChange;
+        if (c == null) return Task.FromResult(0);
+        var tcs = new TaskCompletionSource<object>();
+        c.Invoke(isAdd, id, line, content, tcs);
+        return tcs.Task;
+    }
+
+    private Task SendError(string error)
+    {
+        var c = OnError;
+        if (c == null) return Task.FromResult(0);
+        var tcs = new TaskCompletionSource<object>();
+        c.Invoke(error, tcs);
+        return tcs.Task;
+    }
+
+    struct Adornment
+    {
+        public string File;
+        public int Line;
+        public string Content;
+        public int ContentHash;
+        public int Tag;
+    }
+
+    public async void RunAsync()
+    {
+        // This is the state of the client
+        var Database = new Dictionary<string, Dictionary<int, Adornment>>();
+        string watchFile = null;
+        int watchLine = -1, watchCount = -1;
+        ReplayHostInstance instance = null;
+
+        var queueTask = Queue.ReceiveAsync();
+        var stdinTask = null as Task<string>;
+        
+
+        while (true)
+        {
+            if (stdinTask == null) await queueTask; else await Task.WhenAny(queueTask, stdinTask);
+
+            if (stdinTask?.IsCompleted == true)
+            {
+
+            }
+
+            if (queueTask.IsCompleted)
+            {
+                var cmdt = await queueTask; queueTask = Queue.ReceiveAsync();
+                var cmd = cmdt.Item1;
+                var cmds = cmd.Split(new[] { '\t' });
+                var cmdproject = cmdt.Item2;
+                
+                if (cmds[0] == "CHANGE")
+                {
+                    if (instance != null) await instance.DisposeAsync(); instance = null;
+
+                }
+            }
+        }
+
+    }
+
+    CancellationTokenSource Cancel;
+    Task Task;
+    //
+    ImmutableArray<Tuple<int, Diagnostic>> CurrentClientDiagnostics = ImmutableArray<Tuple<int, Diagnostic>>.Empty;
+    public event Action<string> DiagnosticChanged;
+    static int DiagnosticCount;
+    //
+    string WatchFile; int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
+    TaskCompletionSource<object> WatchChanged;
+    public event Action<int, string> LineChanged;
+
+    public void TriggerReplayAsync(Project project)
+    {
+        Cancel?.Cancel();
+        Cancel = new CancellationTokenSource();
+        Task = ReplayInnerAsync(project, Task, Cancel.Token);
+    }
+
+    public void WatchAndMissing(Document document, int line, int lineCount, IEnumerable<int> missing)
+    {
+        WatchFile = document.FilePath;
+        WatchLine = line;
+        WatchLineCount = lineCount;
+        WatchMissing = missing.ToImmutableArray();
+        WatchChanged?.TrySetResult(null);
+    }
+
+    class IntDiagnosticComparer : IEqualityComparer<Tuple<int, Diagnostic>>
+    {
+        public string ToString(Diagnostic diagnostic)
+        {
+            var file = "";
+            int offset = -1, length = -1;
+            if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
+            var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
+            return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
+        }
+        public bool Equals(Tuple<int, Diagnostic> x, Tuple<int, Diagnostic> y) => ToString(x.Item2) == ToString(y.Item2);
+        public int GetHashCode(Tuple<int, Diagnostic> obj) => ToString(obj.Item2)?.GetHashCode() ?? 0;
+    }
+    static readonly IntDiagnosticComparer Comparer = new IntDiagnosticComparer();
+
+
+    async Task ReplayInnerAsync(Project project, Task prevTask, CancellationToken cancel)
+    {
+        if (prevTask != null) try { await prevTask.ConfigureAwait(false); } catch (Exception) { }
+        if (project == null) return;
+
+        project = await ReplayHost.InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
+        var results = await ReplayHost.BuildAsync(project, cancel).ConfigureAwait(false);
+
+        // Update warnings+errors
+        var diagnostics = results.Diagnostics.Select(d => Tuple.Create(DiagnosticCount++, d)).ToImmutableArray();
+        var toRemove = CurrentClientDiagnostics.Except(diagnostics, Comparer).ToImmutableArray();
+        var toAdd = diagnostics.Except(CurrentClientDiagnostics, Comparer).ToImmutableArray();
+        foreach (var id in CurrentClientDiagnostics.Except(diagnostics, Comparer)) DiagnosticChanged?.Invoke($"DIAGNOSTIC\tremove\t{id.Item1}\t{Comparer.ToString(id.Item2)}");
+        foreach (var id in diagnostics.Except(CurrentClientDiagnostics, Comparer)) DiagnosticChanged?.Invoke($"DIAGNOSTIC\tadd\t{id.Item1}\t{Comparer.ToString(id.Item2)}");
+        CurrentClientDiagnostics = diagnostics;
+        if (!results.Success) return;
+
+        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
+        if (WatchLineCount != 0) host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, null);
+        WatchChanged = new TaskCompletionSource<object>();
+        var replayTask = host.ReadReplayAsync(cancel);
+        while (true)
+        {
+            await Task.WhenAny(WatchChanged.Task, replayTask).ConfigureAwait(false);
+            if (WatchChanged.Task.IsCompleted)
+            {
+                host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, WatchMissing);
+                WatchChanged = new TaskCompletionSource<object>();
+            }
+            else if (replayTask.IsCompleted)
+            {
+                var replay = await replayTask.ConfigureAwait(false);
+                if (replay == null) return;
+                LineChanged?.Invoke(replay.Item1, replay.Item2);
+                replayTask = host.ReadReplayAsync(cancel);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        Cancel?.Cancel();
+    }
+
+
 
     public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel = default(CancellationToken))
     {
@@ -162,7 +391,7 @@ class ReplayHost : IDisposable
         return new BuildResult(result, fn);
     }
 
-    public static async Task<ReplayHost> RunAsync(string outputFilePath, CancellationToken cancel = default(CancellationToken))
+    public static async Task<ReplayHostInstance> RunAsync(string outputFilePath, CancellationToken cancel = default(CancellationToken))
     {
         bool isCore = string.Compare(Path.GetExtension(outputFilePath), ".dll", true) == 0;
 
@@ -183,7 +412,7 @@ class ReplayHost : IDisposable
             cancel.ThrowIfCancellationRequested();
             var line = await lineTask.ConfigureAwait(false);
             if (line != "OK") throw new Exception($"Expecting 'OK', got '{line}'");
-            var host = new ReplayHost { Process = process };
+            var host = new ReplayHostInstance { Process = process };
             process = null;
             return host;
         }

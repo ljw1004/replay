@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 
 class Program
 {
-
     static void Main()
     {
         Replay.Log<object>(null, null, null, -1, -1);

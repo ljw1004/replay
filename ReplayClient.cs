@@ -10,56 +10,23 @@ namespace System.Runtime.CompilerServices
 {
     public class Replay
     {
-        // Client <-> Host <-> Editor
-        // The host is always on the same machine as the replayer. They communicate by serialization.
-        // The host and editor are in the same process (VSIX) or on remote machines (online).
-        // The host can trigger the client to shut down and a new client to launch.
-        
-        // For now:
-        // CLIENT: Each successive instance of the client builds up a database of replays that it's executed
-        // so far. It knows which range the host is currently watching, and if it further executes anything within that
-        // range, it notifies the host.
-        // HOST: The host builds up a database of replays, a database that persists across multiple client instances.
-        // For each entry in that database it assigns a tracking ID. It ensures the editor has the same database,
-        // by notifying the editor of each removed/added entry and associated ID. It knows which range the editor
-        // is currently watching. If the range changes, by assumption the editor already knows the host's database.
-        // The host also tells the client about the new range
-        // 
-        // Host builds up a database of ranges it knows, and hashes+text of the replays within that range,
-        // and a synthesized ID for each replay.
-        // Client 
-
-        // Host keeps a list of ranges it knows, and hashes+texts of the replays within that range.
-        // Assumption is that the client knows everything that the host does.
-        // When editor requests a range, host delivers what it can and requests the rest from the client
-        // When host requests a range, it sends all the lines within that range that it knows;
-        // client will reply back by removing and adding as necessary.
-        // When client updates asynchronously, it will only send back if within the watched range.
-        
-
-        // > WATCH file line count nhashes line1 hash1 ... lineN hashN
-        // < REPLAY add line hash txt
-        // < REPLAY remove line hash
-        // > DUMP
-        // < DUMP file line txt
-
         static TextWriter SystemOut = Console.Out;
         static TextReader SystemIn = Console.In;
         static HookOut MyOut = new HookOut();
         static HookIn MyIn = new HookIn();
-        static Dictionary<string, Dictionary<int, LineItem>> Database = new Dictionary<string, Dictionary<int, LineItem>>();
+
         static BufferBlock<LineItem> Queue = new BufferBlock<LineItem>();
 
         private struct LineItem
         {
             public readonly string File;
             public readonly int Line;
-            public readonly string Text;
-            public readonly int TextHash;
+            public readonly string Content;
+            public readonly int ContentHash;
             
-            public LineItem(string file, int line, string text)
+            public LineItem(string file, int line, string content)
             {
-                File = file; Line = line; Text = text; TextHash = text?.GetHashCode() ?? 0;
+                File = file; Line = line; Content = content; ContentHash = content?.GetHashCode() ?? 0;
             }
         }
 
@@ -70,6 +37,9 @@ namespace System.Runtime.CompilerServices
             var thread = new Thread(RunConversation);
             thread.IsBackground = false;
             thread.Start();
+
+            //AppDomain.CurrentDomain.ProcessExit
+            //AssemblyLoadContext.Default.Unloading
         }
 
         private class HookOut : TextWriter
@@ -88,21 +58,31 @@ namespace System.Runtime.CompilerServices
         {
             var queueTask = Queue.ReceiveAsync();
             var stdinTask = Task.Run(SystemIn.ReadLineAsync);
-            string watchFile = null; int watchLine = -1, watchCount = -1;
             SystemOut.WriteLine("OK");
+
+            // This is the state of the client
+            var Database = new Dictionary<string, Dictionary<int, LineItem>>();
+            string watchFile = null;
+            int watchLine = -1, watchCount = -1;
+            var watchHashes = new Dictionary<int, int>();
+
+
             while (true)
             {
-                var winner = Task.WaitAny(queueTask, stdinTask);
+                Task.WaitAny(queueTask, stdinTask);
 
                 if (stdinTask.IsCompleted)
                 {
-                    var line = stdinTask.Result;
-                    stdinTask = Task.Run(SystemIn.ReadLineAsync);
-                    if (line == null) Environment.Exit(1);
-                    var cmds = line.Split('\t').ToList();
+                    var cmd = stdinTask.Result; stdinTask = Task.Run(SystemIn.ReadLineAsync);
+                    if (cmd == null) Environment.Exit(1);
+                    var cmds = cmd.Split('\t').ToList();
 
                     if (cmds[0] == "FILES")
                     {
+                        if (cmds.Count != 1)
+                        {
+                            SystemOut.WriteLine($"ERROR\tEXPECTED 'FILES', got '{cmd}'"); continue;
+                        }
                         foreach (var kv in Database) { SystemOut.WriteLine($"FILE\t{kv.Key}"); }
                     }
 
@@ -110,63 +90,54 @@ namespace System.Runtime.CompilerServices
                     {
                         if (cmds.Count != 1)
                         {
-                            SystemOut.WriteLine($"ERROR\tExpected 'DUMP', got '{line}'"); continue;
+                            SystemOut.WriteLine($"ERROR\tExpected 'DUMP', got '{cmd}'"); continue;
                         }
                         foreach (var kv1 in Database)
                         {
                             foreach (var kv2 in kv1.Value)
                             {
                                 var lineItem = kv2.Value;
-                                SystemOut.WriteLine($"DUMP\t{lineItem.File}\t{lineItem.Line}\t{lineItem.Text}");
+                                SystemOut.WriteLine($"DUMP\t{lineItem.File}\t{lineItem.Line}\t{lineItem.Content}");
                             }
                         }
                     }
 
                     else if (cmds[0] == "WATCH")
                     {
-                        string file; int iline, icount, nhashes, ihash;
+                        string file; int line, count, nhashes;
                         if (cmds.Count < 5
                             || (file = cmds[1]) == null
-                            || !int.TryParse(cmds[2], out iline) || !int.TryParse(cmds[3], out icount)
+                            || !int.TryParse(cmds[2], out line) || !int.TryParse(cmds[3], out count)
                             || !int.TryParse(cmds[4], out nhashes)
                             || cmds.Count != nhashes*2 + 5)
                         {
-                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH file line count nhashes ...', got '{line}'"); continue;
+                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH file line count nhashes ...', got '{cmd}'"); continue;
                         }
-                        var hostAlreadyHas = new Dictionary<int, int>();
                         for (int i=0; i<nhashes; i++)
                         {
-                            if (!int.TryParse(cmds[5+i], out iline) || !int.TryParse(cmds[6+i], out ihash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{line}'"); continue; }
-                            hostAlreadyHas[iline] = ihash;
+                            int hash;
+                            if (!int.TryParse(cmds[5+i], out line) || !int.TryParse(cmds[6+i], out hash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{cmd}'"); continue; }
+                            watchHashes[line] = hash;
                         }
-                        watchFile = file; watchLine = iline; watchCount = icount;
-                        //
-                        var hostWillHave = new Dictionary<int,LineItem>();
+                        watchFile = file; watchLine = line; watchCount = count;
+                        foreach (var k in watchHashes.Keys.Where(i => i < watchLine || i >= watchLine + watchCount).ToArray()) watchHashes.Remove(k);
+
                         if (Database.ContainsKey(watchFile))
                         {
                             var dbfile = Database[watchFile];
                             foreach (var kv in dbfile)
                             {
-                                if (kv.Key < watchLine || kv.Key >= watchLine + watchCount) continue;
-                                hostWillHave[kv.Key] = kv.Value;
+                                var li = kv.Value; int hash;
+                                if (li.Line < watchLine || li.Line >= watchLine + watchCount) continue;
+                                if (watchHashes.TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
+                                SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
                             }
                         }
-                        //
-                        var toRemove = hostAlreadyHas;
-                        var toAdd = new List<LineItem>();
-                        foreach (var kv in hostWillHave)
-                        {
-                            int hash; bool wasLineInHost = toRemove.TryGetValue(kv.Key, out hash);
-                            if (wasLineInHost && hash == kv.Value.TextHash) { toRemove.Remove(kv.Key); continue; } // no need for update
-                            toAdd.Add(kv.Value);
-                        }
-                        foreach (var kv in toRemove) SystemOut.WriteLine($"REPLAY\tremove\t{kv.Key}\t{kv.Value}");
-                        foreach (var li in toAdd) SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.TextHash}\t{li.Text}");
                     }
 
                     else
                     {
-                        SystemOut.WriteLine($"ERROR\tClient expected one FILES|DUMP|WATCH, got '{line}'");
+                        SystemOut.WriteLine($"ERROR\tClient expected one FILES|DUMP|WATCH, got '{cmd}'");
                     }
 
                     continue;
@@ -182,7 +153,10 @@ namespace System.Runtime.CompilerServices
                     //
                     if (watchFile == li.File && watchLine <= li.Line && watchLine + watchCount > li.Line)
                     {
-                        SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.TextHash}\t{li.Text}");
+                        int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
+                        {
+                            SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
+                        }
                     }
                 }
             }

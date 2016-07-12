@@ -56,6 +56,7 @@ internal sealed class ReplayAdornment
 
         View = view;
         View.LayoutChanged += OnLayoutChanged;
+        View.TextBuffer.Changed += 
         View.ViewportWidthChanged += OnViewportWidthChanged;
         View.Closed += OnClosed;
     }
