@@ -86,15 +86,43 @@ using System.Threading.Tasks.Dataflow;
 
 class ReplayHost : IDisposable
 {
+    private bool EditorHasOwnDatabase;
     private BufferBlock<Tuple<string, Project>> Queue = new BufferBlock<Tuple<string, Project>>();
-    private int DiagnosticTag;
+    private int TagCounter;
+    private Task RunTask;
+    private CancellationTokenSource RunCancel = new CancellationTokenSource();
 
-    public delegate void AdornmentChangedHandler(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral);
-    public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral);
-    public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral);
+    public delegate void AdornmentChangedHandler(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel);
+    public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel);
+    public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public event AdornmentChangedHandler OnAdornmentChange;
     public event DiagnosticChangedHandler OnDiagnosticChange;
     public event ReplayHostError OnError;
+
+    public ReplayHost(bool editorHasOwnDatabase)
+    {
+        EditorHasOwnDatabase = editorHasOwnDatabase;
+        RunTask = RunAsync(RunCancel.Token);
+    }
+
+    public async Task DisposeAsync()
+    {
+        try
+        {
+            var t = Interlocked.Exchange(ref RunTask, null);
+            if (t == null) return;
+            RunCancel.Cancel();
+            await t.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        DisposeAsync().GetAwaiter().GetResult();
+    }
 
     public void DocumentHasChanged(Project project, string file, int line, int count, int newcount)
     {
@@ -108,50 +136,60 @@ class ReplayHost : IDisposable
         Queue.Post(Tuple.Create($"WATCH\t{file}\t{line}\t{count}", (Project)null));
     }
 
-    private Task SendAdornmentChangeAsync(bool isAdd, int tag, int line, string content)
+    private Task SendAdornmentChangeAsync(bool isAdd, int tag, int line, string content, CancellationToken cancel)
     {
         var c = OnAdornmentChange;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
-        c.Invoke(isAdd, tag, line, content, tcs);
+        c.Invoke(isAdd, tag, line, content, tcs, cancel);
         return tcs.Task;
     }
 
-    private Task SendDiagnosticChangeAsync(bool isAdd, int tag, Diagnostic diagnostic)
+    private Task SendDiagnosticChangeAsync(bool isAdd, int tag, Diagnostic diagnostic, CancellationToken cancel)
     {
         var c = OnDiagnosticChange;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
-        c.Invoke(isAdd, tag, diagnostic, tcs);
+        c.Invoke(isAdd, tag, diagnostic, tcs, cancel);
         return tcs.Task;
     }
 
-    private Task SendErrorAsync(string error)
+    private Task SendErrorAsync(string error, CancellationToken cancel)
     {
         var c = OnError;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
-        c.Invoke(error, tcs);
+        c.Invoke(error, tcs, cancel);
         return tcs.Task;
     }
 
 
     struct TaggedAdornment
     {
-        public string File;
-        public int Line;
-        public string Content;
-        public int ContentHash;
-        public int Tag;
+        public readonly string File;
+        public readonly int Line;
+        public readonly string Content;
+        public readonly int ContentHash;
+        public readonly int Tag;
+
+        public TaggedAdornment(string file, int line, string content, int hash, int tag)
+        {
+            File = file; Line = line; Content = content; ContentHash = hash; Tag = tag;
+        }
     }
 
     struct TaggedDiagnostic
     {
-        public Diagnostic Diagnostic;
-        public int Tag;
+        public readonly Diagnostic Diagnostic;
+        public readonly int Tag;
+
+        public TaggedDiagnostic(int tag, Diagnostic diagnostic)
+        {
+            Tag = tag; Diagnostic = diagnostic;
+        }
     }
 
-    public async void RunAsync()
+    private async Task RunAsync(CancellationToken cancel)
     {
         // This is the state of the client
         var Database1 = new List<TaggedDiagnostic>();
@@ -172,168 +210,187 @@ class ReplayHost : IDisposable
             tasks.Add(queueTask);
             if (readProcessTask == null && getProcessTask != null) tasks.Add(getProcessTask);
             if (readProcessTask != null) tasks.Add(readProcessTask);
-            await Task.WhenAny(tasks);
+            var tcsCancel = new TaskCompletionSource<object>(); tasks.Add(tcsCancel.Task);
+            using (var reg = cancel.Register(tcsCancel.SetCanceled)) await Task.WhenAny(tasks).ConfigureAwait(false);
+
+            cancel.ThrowIfCancellationRequested();
 
             if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
             {
-                readProcessTask = (await getProcessTask).ReadLineAsync();
+                readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
                 continue;
             }
 
             if (getProcessTask?.IsFaulted == true)
             {
-                string msg = "error"; try { await getProcessTask; } catch (Exception ex) { msg = ex.Message; }
+                string msg = "error"; try { getProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
                 getProcessTask = null;
-                await SendErrorAsync($"ERROR\tBuild failed: '{msg}'");
+                await SendErrorAsync($"ERROR\tBuild failed: '{msg}'", cancel).ConfigureAwait(false);
                 continue;
             }
 
-            if (queueTask?.Status == TaskStatus.RanToCompletion && (await queueTask).Item1.StartsWith("CHANGE\t"))
+            if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("CHANGE\t"))
             {
-                var cmd = await queueTask; queueTask = Queue.ReceiveAsync();
+                var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
                 var cmdproject = cmd.Item2;
                 var cmds = cmd.Item1.Split(new[] { '\t' });
                 string file = cmds[1];
                 int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]), newcount = int.Parse(cmds[4]);
-                //
-                // TODO: modify the database
-                //
+
+                // Modify entries in the database: delete all line <= entry < line+count; add (newcount-count) to all line+count <= entry
+                if (Database2.ContainsKey(file))
+                {
+                    var dbfile = Database2[file];
+                    foreach (var entry in Database2[file])
+                    {
+                        if (entry.Key < line) dbfile[entry.Key] = entry.Value;
+                        if (line <= entry.Key && entry.Key < line + count) { }
+                        else dbfile[entry.Key + newcount - count] = entry.Value; 
+                    }
+                    Database2[file] = dbfile;
+                }
+
+                // Rebuild + restart the process
                 getProcessCancel?.Cancel();
-                getProcessCancel = new CancellationTokenSource();
+                getProcessCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
                 getProcessTask = GetProcessAsync(cmdproject, Database1, getProcessTask, getProcessCancel.Token);
                 readProcessTask = null;
                 continue;
             }
 
-            if (queueTask?.Status == TaskStatus.RanToCompletion && (await queueTask).Item1.StartsWith("WATCH\t"))
+            if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("WATCH\t"))
             {
-                var cmd = await queueTask; queueTask = Queue.ReceiveAsync();
+                var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
                 var cmds = cmd.Item1.Split(new[] { '\t' });
                 string file = cmds[1];
                 int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]);
                 //
+                var hashes = (Database2.ContainsKey(file))
+                             ? Database2[file].Values.Where(ta => line <= ta.Line && ta.Line < line + count).ToList()
+                             : new List<TaggedAdornment>();
+                if (!EditorHasOwnDatabase)
+                {
+                    foreach (var ta in hashes) await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                }
+                //
+                if (watchFile == file && watchLine == line && watchCount == count) continue;
                 watchFile = file; watchLine = line; watchCount = count;
                 if (getProcessTask?.Status != TaskStatus.RanToCompletion) continue;
-                var process = await getProcessTask;
-                await process.PostLineAsync("WATCH"); // TODO: fill this out
+                var process = getProcessTask.Result;
+                // WATCH file line count nhashes line0 hash0 ... lineN hashN
+                var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
+                await process.PostLineAsync($"WATCH\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}", cancel).ConfigureAwait(false);
                 continue;
             }
 
             if (queueTask?.IsCompleted == true)
             {
-                string msg; try { msg = (await queueTask).Item1; } catch (Exception ex) { msg = ex.Message; }
+                string msg; try { msg = queueTask.GetAwaiter().GetResult().Item1; } catch (Exception ex) { msg = ex.Message; }
                 queueTask = Queue.ReceiveAsync();
-                await SendErrorAsync($"ERROR\tHost expected CHANGE|WATCH, got '{msg}'");
+                await SendErrorAsync($"ERROR\tHost expected CHANGE|WATCH, got '{msg}'", cancel).ConfigureAwait(false);
                 continue;
             }
 
-            if (readProcessTask?.Status == TaskStatus.RanToCompletion && (await readProcessTask).StartsWith("REPLAY\t"))
+            if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("REPLAY\t"))
             {
-                var cmd = await readProcessTask;
-                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? (await getProcessTask).ReadLineAsync() : null;
-                // TODO: ...
+                var cmd = readProcessTask.Result;
+                var cmds = cmd.Split(new[] { '\t' });
+                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? getProcessTask.Result.ReadLineAsync(cancel) : null;
+                // REPLAY add line hash content
+                // REPLAY remove line
+                int line=-1, hash=-1; string content = null;
+                bool ok = false;
+                if (cmds.Length == 5 && cmds[1] == "add" && int.TryParse(cmds[2], out line) && int.TryParse(cmds[3], out hash) && (content = cmds[4]) != null) ok = true;
+                if (cmds.Length == 3 && cmds[1] == "remove" && int.TryParse(cmds[3], out line)) ok = true;
+                if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add line hash content | REPLAY remove line', got '{cmd}'", cancel); continue; }
+                //
+                if (cmds[1] == "remove")
+                {
+                    Dictionary<int, TaggedAdornment> dbfile; ok = Database2.TryGetValue(watchFile, out dbfile);
+                    if (ok)
+                    {
+                        TaggedAdornment ta; ok = dbfile.TryGetValue(line, out ta);
+                        if (ok)
+                        {
+                            await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
+                            dbfile.Remove(line);
+                            ok = (hash == ta.ContentHash);
+                        }
+                    }
+                    if (!ok) await SendErrorAsync($"ERROR\tHost database lacks '{cmd}'", cancel).ConfigureAwait(false);
+                }
+                else if (cmds[1] == "add")
+                {
+                    if (!Database2.ContainsKey(watchFile)) Database2[watchFile] = new Dictionary<int, TaggedAdornment>();
+                    var dbfile = Database2[watchFile];
+                    var ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
+                    await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                    dbfile[line] = ta;
+                }
                 continue;
             }
 
             if (readProcessTask?.IsCompleted == true)
             {
-                string msg; try { msg = await readProcessTask; } catch (Exception ex) { msg = ex.Message; }
-                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? getProcessTask.Result.ReadLineAsync() : null;
-                await SendErrorAsync($"ERROR\tHost expected REPLAY, got '{msg}'");
+                string msg; try { msg = readProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
+                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? getProcessTask.Result.ReadLineAsync(cancel) : null;
+                await SendErrorAsync($"ERROR\tHost expected REPLAY, got '{msg}'", cancel).ConfigureAwait(false);
                 continue;
             }
 
         }
 
     }
-
-    //CancellationTokenSource Cancel;
-    //Task Task;
-    ////
-    //ImmutableArray<Tuple<int, Diagnostic>> CurrentClientDiagnostics = ImmutableArray<Tuple<int, Diagnostic>>.Empty;
-    //public event Action<string> DiagnosticChanged;
-    //static int DiagnosticCount;
-    ////
-    //string WatchFile; int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
-    //TaskCompletionSource<object> WatchChanged;
-    //public event Action<int, string> LineChanged;
-
-    //class IntDiagnosticComparer : IEqualityComparer<Tuple<int, Diagnostic>>
-    //{
-    //    public string ToString(Diagnostic diagnostic)
-    //    {
-    //        var file = "";
-    //        int offset = -1, length = -1;
-    //        if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
-    //        var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
-    //        return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
-    //    }
-    //    public bool Equals(Tuple<int, Diagnostic> x, Tuple<int, Diagnostic> y) => ToString(x.Item2) == ToString(y.Item2);
-    //    public int GetHashCode(Tuple<int, Diagnostic> obj) => ToString(obj.Item2)?.GetHashCode() ?? 0;
-    //}
-    //static readonly IntDiagnosticComparer Comparer = new IntDiagnosticComparer();
 
 
     async Task<AsyncProcess> GetProcessAsync(Project project, List<TaggedDiagnostic> database, Task<AsyncProcess> prevTask, CancellationToken cancel)
     {
         AsyncProcess prevProcess = null;
         if (prevTask != null) try { prevProcess = await prevTask.ConfigureAwait(false); } catch (Exception) { }
-        if (prevProcess != null) await prevProcess.DisposeAsync();
+        if (prevProcess != null) await prevProcess.DisposeAsync().ConfigureAwait(false);
 
-        var newDatabase = new HashSet<TaggedDiagnostic>();
-        if (project != null)
+        if (project == null)
         {
-            var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
-            var originalDiagnostics = originalComp.GetDiagnostics(cancel);
-            //
-            project = await InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
-            var results = await BuildAsync(project, cancel).ConfigureAwait(false);
-            var annotatedDiagnostics = results.Diagnostics;
-
-
-        // Update warnings+errors
-        var diagnostics = results.Diagnostics.Select(d => Tuple.Create(DiagnosticTag++, d)).ToImmutableArray();
-        var toRemove = CurrentClientDiagnostics.Except(diagnostics, Comparer).ToImmutableArray();
-        var toAdd = diagnostics.Except(CurrentClientDiagnostics, Comparer).ToImmutableArray();
-        foreach (var id in CurrentClientDiagnostics.Except(diagnostics, Comparer)) DiagnosticChanged?.Invoke($"DIAGNOSTIC\tremove\t{id.Item1}\t{Comparer.ToString(id.Item2)}");
-        foreach (var id in diagnostics.Except(CurrentClientDiagnostics, Comparer)) DiagnosticChanged?.Invoke($"DIAGNOSTIC\tadd\t{id.Item1}\t{Comparer.ToString(id.Item2)}");
-        CurrentClientDiagnostics = diagnostics;
-        if (!results.Success) return;
-
-        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
-        if (WatchLineCount != 0) host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, null);
-        WatchChanged = new TaskCompletionSource<object>();
-        var replayTask = host.ReadReplayAsync(cancel);
-        while (true)
-        {
-            await Task.WhenAny(WatchChanged.Task, replayTask).ConfigureAwait(false);
-            if (WatchChanged.Task.IsCompleted)
-            {
-                host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, WatchMissing);
-                WatchChanged = new TaskCompletionSource<object>();
-            }
-            else if (replayTask.IsCompleted)
-            {
-                var replay = await replayTask.ConfigureAwait(false);
-                if (replay == null) return;
-                LineChanged?.Invoke(replay.Item1, replay.Item2);
-                replayTask = host.ReadReplayAsync(cancel);
-            }
+            foreach (var td in database) await SendDiagnosticChangeAsync(false, td.Tag, td.Diagnostic, cancel).ConfigureAwait(false);
+            database.Clear();
+            return null;
         }
+
+        var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
+        var originalDiagnostics = originalComp.GetDiagnostics(cancel);
+        project = await InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
+        var results = await BuildAsync(project, cancel).ConfigureAwait(false);
+        var annotatedDiagnostics = results.Diagnostics;
+        var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default);
+        foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
+
+        // Remove+add diagnostics as needed
+        foreach (var td in database.ToArray())
+        {
+            if (originalDiagnostics.Contains(td.Diagnostic, DiagnosticUserFacingComparer.Default)) continue;
+            await SendDiagnosticChangeAsync(false, td.Tag, td.Diagnostic, cancel).ConfigureAwait(false);
+            database.Remove(td);
+        }
+        foreach (var d in originalDiagnostics)
+        {
+            if (database.Any(td => DiagnosticUserFacingComparer.Default.Equals(td.Diagnostic, d))) continue;
+            var tag = ++TagCounter;
+            await SendDiagnosticChangeAsync(true, tag, d, cancel);
+            database.Add(new TaggedDiagnostic(tag,d));
+        }
+
+        // Launch the process
+        var process = await LaunchProcessAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
+        return process;
     }
 
-    public void Dispose()
-    {
-        Cancel?.Cancel();
-    }
 
 
-
-    public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel = default(CancellationToken))
+    public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel)
     {
         var project = originalProject;
 
-        var originalComp = await originalProject.GetCompilationAsync(cancel);
+        var originalComp = await originalProject.GetCompilationAsync(cancel).ConfigureAwait(false);
         var replay = originalComp.GetTypeByMetadataName("System.Runtime.CompilerServices.Replay");
         if (replay == null)
         {
@@ -350,13 +407,13 @@ class ReplayHost : IDisposable
 
         foreach (var documentId in originalProject.DocumentIds)
         {
-            var document = await InstrumentDocumentAsync(project.GetDocument(documentId)).ConfigureAwait(false);
+            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), cancel).ConfigureAwait(false);
             project = document.Project;
         }
         return project;
     }
 
-    public static async Task<Document> InstrumentDocumentAsync(Document document, CancellationToken cancel = default(CancellationToken))
+    public static async Task<Document> InstrumentDocumentAsync(Document document, CancellationToken cancel)
     {
         var oldComp = await document.Project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var oldTree = await document.GetSyntaxTreeAsync(cancel).ConfigureAwait(false);
@@ -380,7 +437,7 @@ class ReplayHost : IDisposable
         public readonly string ReplayOutputFilePath;
     }
 
-    public static async Task<BuildResult> BuildAsync(Project project, CancellationToken cancel = default(CancellationToken))
+    public static async Task<BuildResult> BuildAsync(Project project, CancellationToken cancel)
     {
         string fn = "";
 
@@ -400,21 +457,25 @@ class ReplayHost : IDisposable
             // (1) if directory "bin/debug/netcoreapp1.0" doesn't exist then create it by doing "dotnet build"
             var dir = Path.GetDirectoryName(project.FilePath);
             var bindir = dir + "/bin/Debug/netcoreapp1.0";
-            if (!Directory.Exists(bindir))
+            if (!File.Exists($"{bindir}/{project.AssemblyName}.deps.json"))
             {
                 using (var process = new Process())
                 {
                     process.StartInfo.FileName = "dotnet.exe";
                     process.StartInfo.Arguments = "build";
+                    process.StartInfo.WorkingDirectory = dir;
                     process.StartInfo.UseShellExecute = false;
                     process.StartInfo.RedirectStandardOutput = true;
+                    process.StartInfo.RedirectStandardError = true;
                     process.StartInfo.CreateNoWindow = true;
                     process.Start();
                     var opTask = process.StandardOutput.ReadToEndAsync();
+                    var errTask = process.StandardError.ReadToEndAsync();
                     using (var reg = cancel.Register(process.Kill)) await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
                     cancel.ThrowIfCancellationRequested();
-                    var op = await opTask;
-                    if (!Directory.Exists(bindir)) throw new Exception("Failed to dotnet build - " + op);
+                    var op = await opTask.ConfigureAwait(false);
+                    var err = await errTask.ConfigureAwait(false);
+                    if (!File.Exists($"{bindir}/{project.AssemblyName}.deps.json")) throw new Exception($"Failed to dotnet build - {err}s{op}");
                 }
             }
 
@@ -441,8 +502,8 @@ class ReplayHost : IDisposable
         return new BuildResult(result, fn);
     }
 
-    public static async Task<ReplayHostInstance> RunAsync(string outputFilePath, CancellationToken cancel = default(CancellationToken))
-    {
+    public static async Task<AsyncProcess> LaunchProcessAsync(string outputFilePath, CancellationToken cancel)
+    {   
         bool isCore = string.Compare(Path.GetExtension(outputFilePath), ".dll", true) == 0;
 
         Process process = null;
@@ -462,7 +523,7 @@ class ReplayHost : IDisposable
             cancel.ThrowIfCancellationRequested();
             var line = await lineTask.ConfigureAwait(false);
             if (line != "OK") throw new Exception($"Expecting 'OK', got '{line}'");
-            var host = new ReplayHostInstance { Process = process };
+            var host = new AsyncProcess(process);
             process = null;
             return host;
         }
@@ -472,8 +533,27 @@ class ReplayHost : IDisposable
             if (process != null) process.Dispose(); process = null;
         }
     }
-
 }
+
+
+class DiagnosticUserFacingComparer : IEqualityComparer<Diagnostic>
+{
+    public static DiagnosticUserFacingComparer Default = new DiagnosticUserFacingComparer();
+
+    public static string ToString(Diagnostic diagnostic)
+    {
+        var file = "";
+        int offset = -1, length = -1;
+        if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
+        var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
+        return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
+    }
+    public bool Equals(Diagnostic x, Diagnostic y) => ToString(x) == ToString(y);
+    public int GetHashCode(Diagnostic x) => ToString(x).GetHashCode();
+}
+
+
+
 
 class TreeRewriter : CSharpSyntaxRewriter
 {
@@ -675,21 +755,37 @@ class AsyncProcess : IDisposable
 {
     private Process Process;
 
-    public async Task PostLineAsync(string cmd, CancellationToken cancel = default(CancellationToken))
+    public AsyncProcess(Process process)
     {
-        using (var reg = cancel.Register(Process.Kill)) await Process.StandardInput.WriteLineAsync(cmd);
+        Process = process;
     }
 
-    public async Task<string> ReadLineAsync(CancellationToken cancel = default(CancellationToken))
+    public async Task PostLineAsync(string cmd, CancellationToken cancel)
     {
-        using (var reg = cancel.Register(Process.Kill)) return await Process.StandardOutput.ReadLineAsync();
+        using (var reg = cancel.Register(Process.Kill)) await Process.StandardInput.WriteLineAsync(cmd).ConfigureAwait(false);
     }
 
-    public void Dispose() => DisposeAsync().Wait();
+    public async Task<string> ReadLineAsync(CancellationToken cancel)
+    {
+        using (var reg = cancel.Register(Process.Kill)) return await Process.StandardOutput.ReadLineAsync().ConfigureAwait(false);
+    }
+
+    public void Dispose()
+    {
+        DisposeAsync().GetAwaiter().GetResult();
+    }
 
     public async Task DisposeAsync()
     {
-        if (Process?.HasExited == false) { Process.Kill(); await Task.Run(() => Process.WaitForExit()).ConfigureAwait(false); }
-        if (Process != null) Process.Dispose(); Process = null;
+        try
+        {
+            var p = Interlocked.Exchange(ref Process, null);
+            if (p == null) return;
+            if (!p.HasExited) { p.Kill(); await Task.Run(() => Process.WaitForExit()).ConfigureAwait(false); }
+            p.Dispose();
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 }

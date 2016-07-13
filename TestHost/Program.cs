@@ -12,48 +12,47 @@ using Microsoft.CodeAnalysis.Text;
 
 class Program
 {
+    static string SampleProjectsDirectory;
+
     static void Main()
     {
+        string d = Directory.GetCurrentDirectory();
+        for (; !Directory.Exists(d + "/SampleProjects") && d != null; d = Path.GetDirectoryName(d)) { }
+        if (d == null) throw new Exception("Sample projects directory not found");
+        SampleProjectsDirectory = d + "/SampleProjects";
         //TestProjectAsync().GetAwaiter().GetResult();
-
-        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApp1");
-        var solution = workspace.CurrentSolution; 
-        var project = solution.Projects.Single();
-        project = project.AddDocument("a.csx", "").WithSourceCodeKind(SourceCodeKind.Script).Project;
-        var comp = project.GetCompilationAsync().Result;
-        foreach (var d in comp.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
-            Console.WriteLine(d.GetMessage());
+        TestClientAsync().GetAwaiter().GetResult();
     }
 
-    static async Task TestScriptAsync()
+    static async Task TestScriptInstrumentingAsync()
     {
         var workspace = new AdhocWorkspace();
         var projectInfo = ProjectInfo.Create(ProjectId.CreateNewId(), VersionStamp.Create(), "TestProject", "TestProject", LanguageNames.CSharp);
         var project = workspace.AddProject(projectInfo);
         var src = SourceText.From(File.ReadAllText(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ScriptApplicationCS\CodeFile1.csx"));
         var document = workspace.AddDocument(project.Id, "CodeFile1.csx", src).WithSourceCodeKind(SourceCodeKind.Script);
-        document = await ReplayHost.InstrumentDocumentAsync(document);
+        document = await ReplayHost.InstrumentDocumentAsync(document, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
-    static async Task TestProjectAsync()
+    static async Task TestClientAsync()
     {
         //var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
         //var solution = await workspace.OpenSolutionAsync(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApplicationCS\ConsoleApplicationCS.sln");
         //var project = solution.Projects.Single();
 
-        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(@"C:\Users\lwischik\Documents\Visual Studio 2015\Projects\ConsoleApp1");
+        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
         var solution = workspace.CurrentSolution;
         var project = solution.Projects.Single();
 
         var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
         project = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
 
-        project = await ReplayHost.InstrumentProjectAsync(project);
+        project = await ReplayHost.InstrumentProjectAsync(project, CancellationToken.None);
 
         var document = project.Documents.FirstOrDefault(d => Path.GetFileName(d.FilePath) == "a.csx");
         if (document != null) Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
-        var result = await ReplayHost.BuildAsync(project);
+        var result = await ReplayHost.BuildAsync(project, CancellationToken.None);
         foreach (var d in result.Diagnostics)
         {
             if (d.Severity != DiagnosticSeverity.Error && d.Severity != DiagnosticSeverity.Warning) continue;
@@ -62,28 +61,29 @@ class Program
             Console.WriteLine($"{path}({line}):{d.GetMessage()}");
         }
         if (!result.Success) return;
-        var host = await ReplayHost.RunAsync(result.ReplayOutputFilePath);
+        var process = await ReplayHost.LaunchProcessAsync(result.ReplayOutputFilePath, CancellationToken.None);
         var cts = new CancellationTokenSource();
-        var task = Runner(host, cts.Token);
-        Console.WriteLine($"> watch {document.FilePath} 1 40");
-        host.WatchAndMissing(document.FilePath, 1, 40,null);
+        var task = Runner(process, cts.Token);
+        var cmd = $"WATCH\t{document.FilePath}\t1\t40\t0";
+        Console.WriteLine(cmd);
+        await process.PostLineAsync(cmd, CancellationToken.None);
         while (true)
         {
-            var cmd = await Task.Run(Console.In.ReadLineAsync);
-            if (string.IsNullOrEmpty(cmd)) break;
-            Console.WriteLine("client unrecognized " + cmd);
+            cmd = await Task.Run(Console.In.ReadLineAsync);
+            if (cmd == null) break;
+            await process.PostLineAsync(cmd, CancellationToken.None);
         }
         cts.Cancel();
         await task.IgnoreCancellation();
     }
 
-    static async Task Runner(ReplayHost host, CancellationToken cancel)
+    static async Task Runner(AsyncProcess host, CancellationToken cancel)
     {
         while (true)
         {
-            var replay = await host.ReadReplayAsync(cancel);
+            var replay = await host.ReadLineAsync(cancel);
             if (replay == null) return;
-            Console.WriteLine($"{replay.Item1}:{replay.Item2}");
+            Console.WriteLine("< " + replay);
         }
     }
 

@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +11,24 @@ namespace System.Runtime.CompilerServices
 {
     public class Replay
     {
+        public static T Log<T>(T data, string id, string file, int line, int reason)
+        {
+            // Empty arguments is used purely to ensure the static constructor of Replay has been run
+            if (data == null && id == null && file == null) return default(T);
+
+            // Gather all the pending Console.Writes from the app, via our hooked side-effect Console.Out monoid
+            var s = MyOut.Log()?.Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
+            if (s != null) Queue.Post(new LineItem(file, line, $"\"{s}\""));
+
+            // Log this current event (for declarations and expression statements)
+            s = (id == null) ? "" : id + "=";
+            s += (data == null) ? "null" : data.ToString();
+            if (reason == 1 || reason == 2) Queue.Post(new LineItem(file, line, s));
+
+            return data;
+        }
+
+
         static TextWriter SystemOut = Console.Out;
         static TextReader SystemIn = Console.In;
         static HookOut MyOut = new HookOut();
@@ -37,9 +56,7 @@ namespace System.Runtime.CompilerServices
             var thread = new Thread(RunConversation);
             thread.IsBackground = false;
             thread.Start();
-
-            //AppDomain.CurrentDomain.ProcessExit
-            //AssemblyLoadContext.Default.Unloading
+            OnExit(() => Queue.Post(new LineItem("ONEXIT", -1, null)));
         }
 
         private class HookOut : TextWriter
@@ -117,7 +134,7 @@ namespace System.Runtime.CompilerServices
                         {
                             int hash;
                             if (!int.TryParse(cmds[5+i], out line) || !int.TryParse(cmds[6+i], out hash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{cmd}'"); continue; }
-                            watchHashes[line] = hash;
+                            watchHashes[line]   = hash;
                         }
                         watchFile = file; watchLine = line; watchCount = count;
                         foreach (var k in watchHashes.Keys.Where(i => i < watchLine || i >= watchLine + watchCount).ToArray()) watchHashes.Remove(k);
@@ -147,15 +164,33 @@ namespace System.Runtime.CompilerServices
                 {
                     var li = queueTask.Result;
                     queueTask = Queue.ReceiveAsync();
-                    if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
-                    var dbfile = Database[li.File];
-                    dbfile[li.Line] = li;
-                    //
-                    if (watchFile == li.File && watchLine <= li.Line && watchLine + watchCount > li.Line)
+
+                    if (li.File == "ONEXIT")
                     {
-                        int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
+                        if (!Database.ContainsKey(watchFile)) Database[watchFile] = new Dictionary<int, LineItem>();
+                        var dbfile = Database[watchFile];
+                        for (int line=watchLine; line<watchLine+watchCount; line++)
                         {
-                            SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
+                            bool hasLi = dbfile.TryGetValue(line, out li);
+                            int hash; bool hasWatch = watchHashes.TryGetValue(line, out hash);
+                            if (hasLi && hasWatch && hash == li.ContentHash) { }
+                            else if (hasLi && hasWatch && hash != li.ContentHash) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{watchFile}:({line})' to have hash {li.ContentHash} but watcher has hash {hash}");
+                            else if (hasLi && !hasWatch) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{watchFile}:({line})' to have hash {li.ContentHash} but watcher has nothing");
+                            else if (!hasLi && hasWatch) SystemOut.WriteLine($"REPLAY\tremove\t{line}");
+                            else if (!hasLi && !hasWatch) { }
+                        }
+                    }
+                    else
+                    {
+                        if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
+                        var dbfile = Database[li.File];
+                        dbfile[li.Line] = li;
+                        if (watchFile == li.File && watchLine <= li.Line && watchLine + watchCount > li.Line)
+                        {
+                            int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
+                            {
+                                SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
+                            }
                         }
                     }
                 }
@@ -163,21 +198,37 @@ namespace System.Runtime.CompilerServices
         }
 
 
-        public static T Log<T>(T data, string id, string file, int line, int reason)
+        public static void OnExit(Action onExit)
         {
-            // Empty arguments is used purely to ensure the static constructor of Replay has been run
-            if (data == null && id == null && file == null) return default(T);
+            var assemblyLoadContextType = Type.GetType("System.Runtime.Loader.AssemblyLoadContext, System.Runtime.Loader");
+            if (assemblyLoadContextType != null)
+            {
+                var currentLoadContext = assemblyLoadContextType.GetTypeInfo().GetProperty("Default").GetValue(null, null);
+                var unloadingEvent = currentLoadContext.GetType().GetTypeInfo().GetEvent("Unloading");
+                var delegateType = typeof(Action<>).MakeGenericType(assemblyLoadContextType);
+                Action<object> lambda = (context) => onExit();
+                unloadingEvent.AddEventHandler(currentLoadContext, lambda.GetMethodInfo().CreateDelegate(delegateType, lambda.Target));
+                return;
+            }
 
-            // Gather all the pending Console.Writes from the app, via our hooked side-effect Console.Out monoid
-            var s = MyOut.Log()?.Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
-            if (s != null) Queue.Post(new LineItem(file, line, $"\"{s}\""));
+            var appDomainType = Type.GetType("System.AppDomain, mscorlib");
+            if (appDomainType != null)
+            {
+                var currentAppDomain = appDomainType.GetTypeInfo().GetProperty("CurrentDomain").GetValue(null, null);
+                var processExitEvent = currentAppDomain.GetType().GetTypeInfo().GetEvent("ProcessExit");
+                EventHandler lambda = (sender, e) => onExit();
+                processExitEvent.AddEventHandler(currentAppDomain, lambda);
+                return;
+                // Note that .NETCore has a private System.AppDomain which lacks the ProcessExit event.
+                // That's why we test for AssemblyLoadContext first!
+            }
 
-            // Log this current event (for declarations and expression statements)
-            s = (id == null) ? "" : id + "=";
-            s += (data == null) ? "null" : data.ToString();
-            if (reason == 1 || reason == 2) Queue.Post(new LineItem(file, line, s));
 
-            return data;
+            bool isNetCore = (Type.GetType("System.Object, System.Runtime") != null);
+            if (isNetCore) throw new Exception("Before calling this function, declare a variable of type 'System.Runtime.Loader.AssemblyLoadContext' from NuGet package 'System.Runtime.Loader'");
+            else throw new Exception("Neither mscorlib nor System.Runtime.Loader is referenced");
+
         }
+
     }
 }
