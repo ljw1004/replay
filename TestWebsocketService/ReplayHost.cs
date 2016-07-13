@@ -84,35 +84,6 @@ using System.Threading.Tasks.Dataflow;
 //   < FILE file
 
 
-class ReplayHostInstance : IDisposable
-{
-    private Process Process;
-
-    private async Task PostLineAsync(string cmd, CancellationToken cancel = default(CancellationToken))
-    {
-        if (Process?.HasExited == true) throw new InvalidOperationException("Process has exited");
-        using (var reg = cancel.Register(Process.Kill)) await Process.StandardInput.WriteLineAsync(cmd);
-    }
-
-    private async Task<string> ReadLineAsync(CancellationToken cancel = default(CancellationToken))
-    {
-        if (Process?.HasExited == true) throw new InvalidOperationException("Process has exited");
-        using (var reg = cancel.Register(Process.Kill)) return await Process.StandardOutput.ReadLineAsync();
-    }
-
-    public void Dispose()
-    {
-        if (Process?.HasExited == false) { Process.Kill(); Process.WaitForExit(); }
-        if (Process != null) Process.Dispose(); Process = null;
-    }
-
-    public async Task DisposeAsync()
-    {
-        if (Process?.HasExited == false) { Process.Kill(); await Task.Run(() => Process.WaitForExit()); }
-        if (Process != null) Process.Dispose(); Process = null;
-    }
-}
-
 class ReplayHost : IDisposable
 {
     private BufferBlock<Tuple<string, Project>> Queue = new BufferBlock<Tuple<string, Project>>();
@@ -122,8 +93,17 @@ class ReplayHost : IDisposable
     public event AdornmentChangedHandler OnAdornmentChange;
     public event ReplayHostError OnError;
 
-    public void DocumentHasChanged(Project project, int line, int count, int newcount) => Queue.Post(Tuple.Create($"CHANGE\t{line}\t{count}\t{newcount}", project));
-    public void ViewHasChanged(int line, int count) => Queue.Post(Tuple.Create($"WATCH\t{line}\t{count}", (Project)null));
+    public void DocumentHasChanged(Project project, string file, int line, int count, int newcount)
+    {
+        if (project == null) throw new ArgumentNullException(nameof(project));
+        if (file == null) throw new ArgumentNullException(nameof(file));
+        Queue.Post(Tuple.Create($"CHANGE\t{file}\t{line}\t{count}\t{newcount}", project));
+    }
+    public void ViewHasChanged(string file, int line, int count)
+    {
+        if (file == null) throw new ArgumentNullException(nameof(file));
+        Queue.Post(Tuple.Create($"WATCH\t{file}\t{line}\t{count}", (Project)null));
+    }
 
     private Task SendAdornmentChangeAsync(bool isAdd, int id, int line, string content)
     {
@@ -134,7 +114,7 @@ class ReplayHost : IDisposable
         return tcs.Task;
     }
 
-    private Task SendError(string error)
+    private Task SendErrorAsync(string error)
     {
         var c = OnError;
         if (c == null) return Task.FromResult(0);
@@ -158,84 +138,117 @@ class ReplayHost : IDisposable
         var Database = new Dictionary<string, Dictionary<int, Adornment>>();
         string watchFile = null;
         int watchLine = -1, watchCount = -1;
-        ReplayHostInstance instance = null;
+        CancellationTokenSource getProcessCancel = null;
+        Task<AsyncProcess> getProcessTask = null;
+
 
         var queueTask = Queue.ReceiveAsync();
-        var stdinTask = null as Task<string>;
+        var readProcessTask = null as Task<string>;
         
 
         while (true)
         {
-            if (stdinTask == null) await queueTask; else await Task.WhenAny(queueTask, stdinTask);
+            var tasks = new List<Task>(3);
+            tasks.Add(queueTask);
+            if (readProcessTask == null && getProcessTask != null) tasks.Add(getProcessTask);
+            if (readProcessTask != null) tasks.Add(readProcessTask);
+            await Task.WhenAny(tasks);
 
-            if (stdinTask?.IsCompleted == true)
+            if (getProcessTask.Status == TaskStatus.RanToCompletion && readProcessTask == null)
             {
-
+                readProcessTask = (await getProcessTask).ReadLineAsync();
+                continue;
             }
 
-            if (queueTask.IsCompleted)
+            if (queueTask.Status == TaskStatus.RanToCompletion && (await queueTask).Item1.StartsWith("CHANGE\t"))
             {
-                var cmdt = await queueTask; queueTask = Queue.ReceiveAsync();
-                var cmd = cmdt.Item1;
-                var cmds = cmd.Split(new[] { '\t' });
-                var cmdproject = cmdt.Item2;
-                
-                if (cmds[0] == "CHANGE")
-                {
-                    if (instance != null) await instance.DisposeAsync(); instance = null;
-
-                }
+                var cmd = await queueTask; queueTask = Queue.ReceiveAsync();
+                var cmdproject = cmd.Item2;
+                var cmds = cmd.Item1.Split(new[] { '\t' });
+                string file = cmds[1];
+                int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]), newcount = int.Parse(cmds[4]);
+                //
+                // TODO: modify the database
+                //
+                getProcessCancel?.Cancel();
+                getProcessCancel = new CancellationTokenSource();
+                getProcessTask = GetProcessAsync(cmdproject, getProcessTask, getProcessCancel.Token);
+                readProcessTask = null;
+                continue;
             }
+
+            if (queueTask.Status == TaskStatus.RanToCompletion && (await queueTask).Item1.StartsWith("WATCH\t"))
+            {
+                var cmd = await queueTask; queueTask = Queue.ReceiveAsync();
+                var cmds = cmd.Item1.Split(new[] { '\t' });
+                string file = cmds[1];
+                int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]);
+                //
+                watchFile = file; watchLine = line; watchCount = count;
+                if (getProcessTask?.Status != TaskStatus.RanToCompletion) continue;
+                var process = await getProcessTask;
+                await process.PostLineAsync("WATCH"); // TODO: fill this out
+                continue;
+            }
+
+            if (queueTask.Status == TaskStatus.RanToCompletion)
+            {
+                // TODO error! we only expect to hear CHANGE and WATCH.
+            }
+
+            if (readProcessTask?.Status == TaskStatus.RanToCompletion && (await readProcessTask).StartsWith("REPLAY\t"))
+            {
+                var cmd = await readProcessTask;
+                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? (await getProcessTask).ReadLineAsync() : null;
+                continue;
+            }
+
+            if (readProcessTask?.Status == TaskStatus.RanToCompletion)
+            {
+                var cmd = await readProcessTask;
+                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? (await getProcessTask).ReadLineAsync() : null;
+                continue;
+            }
+
+            // TODO: what if any of the three things ended in failure?
         }
 
     }
 
-    CancellationTokenSource Cancel;
-    Task Task;
-    //
-    ImmutableArray<Tuple<int, Diagnostic>> CurrentClientDiagnostics = ImmutableArray<Tuple<int, Diagnostic>>.Empty;
-    public event Action<string> DiagnosticChanged;
-    static int DiagnosticCount;
-    //
-    string WatchFile; int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
-    TaskCompletionSource<object> WatchChanged;
-    public event Action<int, string> LineChanged;
+    //CancellationTokenSource Cancel;
+    //Task Task;
+    ////
+    //ImmutableArray<Tuple<int, Diagnostic>> CurrentClientDiagnostics = ImmutableArray<Tuple<int, Diagnostic>>.Empty;
+    //public event Action<string> DiagnosticChanged;
+    //static int DiagnosticCount;
+    ////
+    //string WatchFile; int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
+    //TaskCompletionSource<object> WatchChanged;
+    //public event Action<int, string> LineChanged;
 
-    public void TriggerReplayAsync(Project project)
+    //class IntDiagnosticComparer : IEqualityComparer<Tuple<int, Diagnostic>>
+    //{
+    //    public string ToString(Diagnostic diagnostic)
+    //    {
+    //        var file = "";
+    //        int offset = -1, length = -1;
+    //        if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
+    //        var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
+    //        return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
+    //    }
+    //    public bool Equals(Tuple<int, Diagnostic> x, Tuple<int, Diagnostic> y) => ToString(x.Item2) == ToString(y.Item2);
+    //    public int GetHashCode(Tuple<int, Diagnostic> obj) => ToString(obj.Item2)?.GetHashCode() ?? 0;
+    //}
+    //static readonly IntDiagnosticComparer Comparer = new IntDiagnosticComparer();
+
+
+    async Task<AsyncProcess> GetProcessAsync(Project project, Task<AsyncProcess> prevTask, CancellationToken cancel)
     {
-        Cancel?.Cancel();
-        Cancel = new CancellationTokenSource();
-        Task = ReplayInnerAsync(project, Task, Cancel.Token);
-    }
-
-    public void WatchAndMissing(Document document, int line, int lineCount, IEnumerable<int> missing)
-    {
-        WatchFile = document.FilePath;
-        WatchLine = line;
-        WatchLineCount = lineCount;
-        WatchMissing = missing.ToImmutableArray();
-        WatchChanged?.TrySetResult(null);
-    }
-
-    class IntDiagnosticComparer : IEqualityComparer<Tuple<int, Diagnostic>>
-    {
-        public string ToString(Diagnostic diagnostic)
-        {
-            var file = "";
-            int offset = -1, length = -1;
-            if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
-            var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
-            return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
-        }
-        public bool Equals(Tuple<int, Diagnostic> x, Tuple<int, Diagnostic> y) => ToString(x.Item2) == ToString(y.Item2);
-        public int GetHashCode(Tuple<int, Diagnostic> obj) => ToString(obj.Item2)?.GetHashCode() ?? 0;
-    }
-    static readonly IntDiagnosticComparer Comparer = new IntDiagnosticComparer();
+        AsyncProcess prevProcess = null;
+        if (prevTask != null) try { prevProcess = await prevTask.ConfigureAwait(false); } catch (Exception) { }
+        if (prevProcess != null) await prevProcess.DisposeAsync();
 
 
-    async Task ReplayInnerAsync(Project project, Task prevTask, CancellationToken cancel)
-    {
-        if (prevTask != null) try { await prevTask.ConfigureAwait(false); } catch (Exception) { }
         if (project == null) return;
 
         project = await ReplayHost.InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
@@ -616,5 +629,30 @@ class TreeRewriter : CSharpSyntaxRewriter
                     }));
         var invocation = SyntaxFactory.InvocationExpression(log, args);
         return invocation;
+    }
+}
+
+
+
+class AsyncProcess : IDisposable
+{
+    private Process Process;
+
+    public async Task PostLineAsync(string cmd, CancellationToken cancel = default(CancellationToken))
+    {
+        using (var reg = cancel.Register(Process.Kill)) await Process.StandardInput.WriteLineAsync(cmd);
+    }
+
+    public async Task<string> ReadLineAsync(CancellationToken cancel = default(CancellationToken))
+    {
+        using (var reg = cancel.Register(Process.Kill)) return await Process.StandardOutput.ReadLineAsync();
+    }
+
+    public void Dispose() => DisposeAsync().Wait();
+
+    public async Task DisposeAsync()
+    {
+        if (Process?.HasExited == false) { Process.Kill(); await Task.Run(() => Process.WaitForExit()).ConfigureAwait(false); }
+        if (Process != null) Process.Dispose(); Process = null;
     }
 }
