@@ -20,8 +20,10 @@ class Program
         for (; !Directory.Exists(d + "/SampleProjects") && d != null; d = Path.GetDirectoryName(d)) { }
         if (d == null) throw new Exception("Sample projects directory not found");
         SampleProjectsDirectory = d + "/SampleProjects";
-        //TestProjectAsync().GetAwaiter().GetResult();
-        TestClientAsync().GetAwaiter().GetResult();
+
+        //TestScriptInstrumentingAsync().GetAwaiter().GetResult();
+        //TestClientAsync().GetAwaiter().GetResult();
+        TestHostAsync().GetAwaiter().GetResult();
     }
 
     static async Task TestScriptInstrumentingAsync()
@@ -35,6 +37,56 @@ class Program
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
+    static async Task TestHostAsync()
+    {
+        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
+        var solution = workspace.CurrentSolution;
+        var project = solution.Projects.Single();
+        var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
+        var document = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script);
+        project = document.Project;
+
+        var host = new ReplayHost(true);
+        host.OnDiagnosticChange += (isAdd, tag, diagnostic, deferral, cancel) =>
+        {
+            if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
+            else Console.WriteLine($"-D{tag}");
+            deferral.SetResult(null);
+        };
+        host.OnAdornmentChange += (isAdd, tag, line, content, deferral, cancel) =>
+        {
+            if (isAdd) Console.WriteLine($"+A{tag}: ({line}) {content}");
+            else Console.WriteLine($"-A{tag}");
+            deferral.SetResult(null);
+        };
+        host.OnError += (error, deferral, cancel) =>
+        {
+            Console.WriteLine(error);
+            deferral.SetResult(null);
+        };
+        Console.WriteLine("PROJECT");
+        await host.DocumentHasChangedAsync(project, null, 0, 0, 0);
+        Console.WriteLine("VIEW");
+        await host.ViewHasChangedAsync("c:\\a.csx", 0, 10);
+        Console.WriteLine("CHANGE");
+        txt = "int x = 17;\r\n\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
+        document = document.WithText(SourceText.From(txt));
+        project = document.Project;
+        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 0, 1, 2);
+        Console.WriteLine("DONE");
+    }
+
+
+    private static void Host_OnAdornmentChange(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel)
+    {
+        throw new NotImplementedException();
+    }
+
+    private static void Host_OnDiagnosticChange(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel)
+    {
+        throw new NotImplementedException();
+    }
+
     static async Task TestClientAsync()
     {
         //var workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
@@ -44,7 +96,6 @@ class Program
         var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
         var solution = workspace.CurrentSolution;
         var project = solution.Projects.Single();
-
         var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
         project = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
 

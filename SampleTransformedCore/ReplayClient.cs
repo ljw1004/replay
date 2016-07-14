@@ -1,5 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -91,11 +93,11 @@ namespace System.Runtime.CompilerServices
                 {
                     var cmd = stdinTask.Result; stdinTask = Task.Run(SystemIn.ReadLineAsync);
                     if (cmd == null) Environment.Exit(1);
-                    var cmds = cmd.Split('\t');
+                    var cmds = cmd.Split('\t').ToList();
 
                     if (cmds[0] == "FILES")
                     {
-                        if (cmds.Length != 1)
+                        if (cmds.Count != 1)
                         {
                             SystemOut.WriteLine($"ERROR\tEXPECTED 'FILES', got '{cmd}'"); continue;
                         }
@@ -104,7 +106,7 @@ namespace System.Runtime.CompilerServices
 
                     else if (cmds[0] == "DUMP")
                     {
-                        if (cmds.Length != 1)
+                        if (cmds.Count != 1)
                         {
                             SystemOut.WriteLine($"ERROR\tExpected 'DUMP', got '{cmd}'"); continue;
                         }
@@ -120,34 +122,23 @@ namespace System.Runtime.CompilerServices
 
                     else if (cmds[0] == "WATCH")
                     {
-                        string file, correlation; int line, count, nhashes;
-                        if (cmds.Length < 6
-                            || (correlation = cmds[1]) == null
-                            || (file = cmds[2]) == null
-                            || !int.TryParse(cmds[3], out line)
-                            || !int.TryParse(cmds[4], out count)
-                            || !int.TryParse(cmds[5], out nhashes)
-                            || cmds.Length != nhashes*2 + 6)
+                        string file; int line, count, nhashes;
+                        if (cmds.Count < 5
+                            || (file = cmds[1]) == null
+                            || !int.TryParse(cmds[2], out line) || !int.TryParse(cmds[3], out count)
+                            || !int.TryParse(cmds[4], out nhashes)
+                            || cmds.Count != nhashes*2 + 5)
                         {
-                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH correlation file line count nhashes ...', got '{cmd}'"); continue;
+                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH file line count nhashes ...', got '{cmd}'"); continue;
                         }
-
-                        //SystemOut.WriteLine($"DEBUG\tGot watch. My current belief is below. Got '{cmd}'");
-                        //foreach (var watch in watchHashes) SystemOut.WriteLine($"DEBUG\tcurrent ({watch.Key}) hash={watch.Value}");
-
-                        watchFile = file; watchLine = line; watchCount = count;
-
-                        for (int i=0; i<nhashes*2; i+=2)
+                        for (int i=0; i<nhashes; i++)
                         {
                             int hash;
-                            if (!int.TryParse(cmds[6+i], out line) || !int.TryParse(cmds[7+i], out hash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{cmd}'"); continue; }
-                            watchHashes[line] = hash;
+                            if (!int.TryParse(cmds[5+i], out line) || !int.TryParse(cmds[6+i], out hash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{cmd}'"); continue; }
+                            watchHashes[line]   = hash;
                         }
-
-                        //SystemOut.WriteLine($"DEBUG\tMy updated belief is below.");
-                        //foreach (var watch in watchHashes) SystemOut.WriteLine($"DEBUG\tupdated ({watch.Key}) hash={watch.Value}");
-
-                        //SystemOut.WriteLine($"DEBUG\tChecking range watchFile={watchFile} watchLine={watchLine} watchCount={watchCount}");
+                        watchFile = file; watchLine = line; watchCount = count;
+                        foreach (var k in watchHashes.Keys.Where(i => i < watchLine || i >= watchLine + watchCount).ToArray()) watchHashes.Remove(k);
 
                         if (watchFile != null && Database.ContainsKey(watchFile))
                         {
@@ -155,14 +146,11 @@ namespace System.Runtime.CompilerServices
                             foreach (var kv in dbfile)
                             {
                                 var li = kv.Value; int hash;
-                                //SystemOut.WriteLine($"DEBUG\tConsider ({li.Line}) hash={li.ContentHash}");
                                 if (li.Line < watchLine || li.Line >= watchLine + watchCount) continue;
                                 if (watchHashes.TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
                                 SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
-                                watchHashes[li.Line] = li.ContentHash;
                             }
                         }
-                        if (correlation != "") SystemOut.WriteLine($"END\twatch\t{correlation}");
                     }
 
                     else
@@ -178,30 +166,15 @@ namespace System.Runtime.CompilerServices
                     var li = queueTask.Result;
                     queueTask = Queue.ReceiveAsync();
 
-                    //SystemOut.WriteLine($"DEBUG\tLOG {li.File}({li.Line}): {li.Content} hash={li.ContentHash}");
-
-                    if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
-                    var dbfile = Database[li.File];
-                    dbfile[li.Line] = li;
-
-                    //SystemOut.WriteLine($"DEBUG\tDoes this log match watchFile={watchFile} watchLine={watchLine} watchCount={watchCount}?");
-                    if (watchFile == li.File && watchLine <= li.Line && li.Line < watchLine + watchCount)
+                        if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
+                        var dbfile = Database[li.File];
+                        dbfile[li.Line] = li;
+                    if (watchFile == li.File && watchLine <= li.Line && watchLine + watchCount > li.Line)
                     {
-                        //SystemOut.WriteLine($"DEBUG\tIn range");
                         int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
                         {
-                            //SystemOut.WriteLine($"DEBUG\tHash absent or wrong in host");
                             SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
-                            watchHashes[li.Line] = li.ContentHash;
                         }
-                        else
-                        {
-                            //SystemOut.WriteLine($"DEBUG\tHash present and correct in host");
-                        }
-                    }
-                    else
-                    {
-                        //SystemOut.WriteLine($"DEBUG\tOut of range");
                     }
                     continue;
                 }
@@ -224,7 +197,7 @@ namespace System.Runtime.CompilerServices
                             else if (!hasLi && !hasWatch) { }
                         }
                     }
-                    SystemOut.WriteLine($"END\trun");
+                    SystemOut.WriteLine($"END\t");
                 }
 
             }

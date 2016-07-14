@@ -87,7 +87,7 @@ using System.Threading.Tasks.Dataflow;
 class ReplayHost : IDisposable
 {
     private bool EditorHasOwnDatabase;
-    private BufferBlock<Tuple<string, Project>> Queue = new BufferBlock<Tuple<string, Project>>();
+    private BufferBlock<Tuple<string, Project, TaskCompletionSource<object>>> Queue = new BufferBlock<Tuple<string, Project, TaskCompletionSource<object>>>();
     private int TagCounter;
     private Task RunTask;
     private CancellationTokenSource RunCancel = new CancellationTokenSource();
@@ -124,16 +124,19 @@ class ReplayHost : IDisposable
         DisposeAsync().GetAwaiter().GetResult();
     }
 
-    public void DocumentHasChanged(Project project, string file, int line, int count, int newcount)
+    public Task DocumentHasChangedAsync(Project project, string file, int line, int count, int newcount)
     {
         if (project == null) throw new ArgumentNullException(nameof(project));
-        if (file == null) throw new ArgumentNullException(nameof(file));
-        Queue.Post(Tuple.Create($"CHANGE\t{file}\t{line}\t{count}\t{newcount}", project));
+        var tcs = new TaskCompletionSource<object>();
+        Queue.Post(Tuple.Create($"CHANGE\t{file}\t{line}\t{count}\t{newcount}", project, tcs));
+        return tcs.Task;
     }
-    public void ViewHasChanged(string file, int line, int count)
+    public Task ViewHasChangedAsync(string file, int line, int count)
     {
         if (file == null) throw new ArgumentNullException(nameof(file));
-        Queue.Post(Tuple.Create($"WATCH\t{file}\t{line}\t{count}", (Project)null));
+        var tcs = new TaskCompletionSource<object>();
+        Queue.Post(Tuple.Create($"WATCH\t{file}\t{line}\t{count}", (Project)null, tcs));
+        return tcs.Task;
     }
 
     private Task SendAdornmentChangeAsync(bool isAdd, int tag, int line, string content, CancellationToken cancel)
@@ -176,6 +179,8 @@ class ReplayHost : IDisposable
         {
             File = file; Line = line; Content = content; ContentHash = hash; Tag = tag;
         }
+        public TaggedAdornment WithLine(int line) => new TaggedAdornment(File, line, Content, ContentHash, Tag);
+        public override string ToString() => $"{Path.GetFileName(File)}({Line}):{Content}  [#{Tag}]";
     }
 
     struct TaggedDiagnostic
@@ -196,150 +201,236 @@ class ReplayHost : IDisposable
         var Database2 = new Dictionary<string, Dictionary<int, TaggedAdornment>>();
         string watchFile = null;
         int watchLine = -1, watchCount = -1;
-        CancellationTokenSource getProcessCancel = null;
-        Task<AsyncProcess> getProcessTask = null;
+        var getProcessCancel = null as CancellationTokenSource;
+        var getProcessTask = null as Task<AsyncProcess>;
+        var runProcessTcs = null as TaskCompletionSource<object>;
+        var watchTcs = new LinkedList<Tuple<string,TaskCompletionSource<object>>>();
 
 
         var queueTask = Queue.ReceiveAsync();
         var readProcessTask = null as Task<string>;
-        
 
-        while (true)
+        try
         {
-            var tasks = new List<Task>(3);
-            tasks.Add(queueTask);
-            if (readProcessTask == null && getProcessTask != null) tasks.Add(getProcessTask);
-            if (readProcessTask != null) tasks.Add(readProcessTask);
-            var tcsCancel = new TaskCompletionSource<object>(); tasks.Add(tcsCancel.Task);
-            using (var reg = cancel.Register(tcsCancel.SetCanceled)) await Task.WhenAny(tasks).ConfigureAwait(false);
 
-            cancel.ThrowIfCancellationRequested();
-
-            if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
+            while (true)
             {
-                readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
-                continue;
-            }
+                var tasks = new List<Task>(4);
+                tasks.Add(queueTask);
+                if (readProcessTask == null && getProcessTask != null) tasks.Add(getProcessTask);
+                if (readProcessTask != null) tasks.Add(readProcessTask);
+                var tcsCancel = new TaskCompletionSource<object>(); tasks.Add(tcsCancel.Task);
+                using (var reg = cancel.Register(tcsCancel.SetCanceled)) await Task.WhenAny(tasks).ConfigureAwait(false);
 
-            if (getProcessTask?.IsFaulted == true)
-            {
-                string msg = "error"; try { getProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
-                getProcessTask = null;
-                await SendErrorAsync($"ERROR\tBuild failed: '{msg}'", cancel).ConfigureAwait(false);
-                continue;
-            }
+                cancel.ThrowIfCancellationRequested();
 
-            if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("CHANGE\t"))
-            {
-                var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
-                var cmdproject = cmd.Item2;
-                var cmds = cmd.Item1.Split(new[] { '\t' });
-                string file = cmds[1];
-                int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]), newcount = int.Parse(cmds[4]);
-
-                // Modify entries in the database: delete all line <= entry < line+count; add (newcount-count) to all line+count <= entry
-                if (Database2.ContainsKey(file))
+                if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
                 {
-                    var dbfile = Database2[file];
-                    foreach (var entry in Database2[file])
+                    // This is the first time we hear that the new process is up
+                    readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+
+                    if (watchFile != null)
                     {
-                        if (entry.Key < line) dbfile[entry.Key] = entry.Value;
-                        if (line <= entry.Key && entry.Key < line + count) { }
-                        else dbfile[entry.Key + newcount - count] = entry.Value; 
+                        var hashes = (watchFile != null && Database2.ContainsKey(watchFile))
+                                     ? Database2[watchFile].Values.Where((ta) => watchLine <= ta.Line && ta.Line < watchLine + watchCount).ToList()
+                                     : new List<TaggedAdornment>();
+                        // WATCH correlation file line count nhashes line0 hash0 ... lineN hashN
+                        var process = getProcessTask.Result;
+                        var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
+                        msg = $"WATCH\t\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}".TrimEnd(new[] { '\t' });
+                        await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
                     }
-                    Database2[file] = dbfile;
+                    continue;
                 }
 
-                // Rebuild + restart the process
-                getProcessCancel?.Cancel();
-                getProcessCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-                getProcessTask = GetProcessAsync(cmdproject, Database1, getProcessTask, getProcessCancel.Token);
-                readProcessTask = null;
-                continue;
-            }
-
-            if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("WATCH\t"))
-            {
-                var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
-                var cmds = cmd.Item1.Split(new[] { '\t' });
-                string file = cmds[1];
-                int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]);
-                //
-                var hashes = (Database2.ContainsKey(file))
-                             ? Database2[file].Values.Where(ta => line <= ta.Line && ta.Line < line + count).ToList()
-                             : new List<TaggedAdornment>();
-                if (!EditorHasOwnDatabase)
+                if (getProcessTask?.IsFaulted == true)
                 {
-                    foreach (var ta in hashes) await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                    string msg = "error"; try { getProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
+                    getProcessTask = null;
+                    await SendErrorAsync($"ERROR\tBuild failed: '{msg}'", cancel).ConfigureAwait(false);
+                    continue;
                 }
-                //
-                if (watchFile == file && watchLine == line && watchCount == count) continue;
-                watchFile = file; watchLine = line; watchCount = count;
-                if (getProcessTask?.Status != TaskStatus.RanToCompletion) continue;
-                var process = getProcessTask.Result;
-                // WATCH file line count nhashes line0 hash0 ... lineN hashN
-                var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
-                await process.PostLineAsync($"WATCH\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}", cancel).ConfigureAwait(false);
-                continue;
-            }
 
-            if (queueTask?.IsCompleted == true)
-            {
-                string msg; try { msg = queueTask.GetAwaiter().GetResult().Item1; } catch (Exception ex) { msg = ex.Message; }
-                queueTask = Queue.ReceiveAsync();
-                await SendErrorAsync($"ERROR\tHost expected CHANGE|WATCH, got '{msg}'", cancel).ConfigureAwait(false);
-                continue;
-            }
-
-            if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("REPLAY\t"))
-            {
-                var cmd = readProcessTask.Result;
-                var cmds = cmd.Split(new[] { '\t' });
-                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? getProcessTask.Result.ReadLineAsync(cancel) : null;
-                // REPLAY add line hash content
-                // REPLAY remove line
-                int line=-1, hash=-1; string content = null;
-                bool ok = false;
-                if (cmds.Length == 5 && cmds[1] == "add" && int.TryParse(cmds[2], out line) && int.TryParse(cmds[3], out hash) && (content = cmds[4]) != null) ok = true;
-                if (cmds.Length == 3 && cmds[1] == "remove" && int.TryParse(cmds[3], out line)) ok = true;
-                if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add line hash content | REPLAY remove line', got '{cmd}'", cancel); continue; }
-                //
-                if (cmds[1] == "remove")
+                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("CHANGE\t"))
                 {
-                    Dictionary<int, TaggedAdornment> dbfile; ok = Database2.TryGetValue(watchFile, out dbfile);
-                    if (ok)
+                    var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
+                    var cmdproject = cmd.Item2;
+                    runProcessTcs?.TrySetCanceled(); runProcessTcs = cmd.Item3;
+                    foreach (var tcs in watchTcs) tcs.Item2.TrySetCanceled();
+                    watchTcs.Clear();
+                    var cmds = cmd.Item1.Split(new[] { '\t' });
+                    string file = cmds[1];
+                    int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]), newcount = int.Parse(cmds[4]);
+
+                    // Modify entries in the database: delete all line <= entry < line+count; add (newcount-count) to all line+count <= entry
+                    if (file != null && Database2.ContainsKey(file))
                     {
-                        TaggedAdornment ta; ok = dbfile.TryGetValue(line, out ta);
+                        var dbfile = new Dictionary<int, TaggedAdornment>();
+                        foreach (var entry in Database2[file])
+                        {
+                            if (entry.Key < line) dbfile[entry.Key] = entry.Value;
+                            if (line <= entry.Key && entry.Key < line + count) { }
+                            else dbfile[entry.Key + newcount - count] = entry.Value.WithLine(entry.Key + newcount - count);
+                        }
+                        Database2[file] = dbfile;
+                    }
+
+                    // Rebuild + restart the process
+                    getProcessCancel?.Cancel();
+                    getProcessCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                    getProcessTask = GetProcessAsync(cmdproject, Database1, getProcessTask, getProcessCancel.Token);
+                    readProcessTask = null;
+                    continue;
+                }
+
+                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("WATCH\t"))
+                {
+                    var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
+                    var cmds = cmd.Item1.Split(new[] { '\t' });
+                    string file = cmds[1];
+                    int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]);
+                    var tcs = cmd.Item3;
+                    //
+                    var hashes = (file != null && Database2.ContainsKey(file))
+                                 ? Database2[file].Values.Where((ta) => line <= ta.Line && ta.Line < line + count).ToList()
+                                 : new List<TaggedAdornment>();
+                    if (!EditorHasOwnDatabase)
+                    {
+                        foreach (var ta in hashes) await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                    }
+                    //
+                    if (watchFile == file && watchLine == line && watchCount == count) { tcs.TrySetResult(null); continue; }
+                    watchFile = file; watchLine = line; watchCount = count;
+                    if (getProcessTask?.Status != TaskStatus.RanToCompletion) { tcs.TrySetResult(null); continue; }
+
+                    // WATCH correlation file line count nhashes line0 hash0 ... lineN hashN
+                    var correlation = ++TagCounter;
+                    watchTcs.AddLast(Tuple.Create(correlation.ToString(), tcs));
+                    var process = getProcessTask.Result;
+                    var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
+                    msg = $"WATCH\t{correlation}\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}".TrimEnd(new[] { '\t' });
+                    await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (queueTask?.IsCompleted == true)
+                {
+                    string msg; try { msg = queueTask.GetAwaiter().GetResult().Item1; } catch (Exception ex) { msg = ex.Message; }
+                    queueTask = Queue.ReceiveAsync();
+                    await SendErrorAsync($"ERROR\tHost expected CHANGE|WATCH, got '{msg}'", cancel).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("REPLAY\t"))
+                {
+                    var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+                    var cmds = cmd.Split(new[] { '\t' });
+                    // REPLAY add line hash content
+                    // REPLAY remove line
+                    int line = -1, hash = -1; string content = null;
+                    bool ok = false;
+                    if (cmds.Length == 5 && cmds[1] == "add" && int.TryParse(cmds[2], out line) && int.TryParse(cmds[3], out hash) && (content = cmds[4]) != null) ok = true;
+                    if (cmds.Length == 3 && cmds[1] == "remove" && int.TryParse(cmds[2], out line)) ok = true;
+                    if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add line hash content | REPLAY remove line', got '{cmd}'", cancel); continue; }
+                    //
+                    if (cmds[1] == "remove")
+                    {
+                        Dictionary<int, TaggedAdornment> dbfile; ok = Database2.TryGetValue(watchFile, out dbfile);
                         if (ok)
                         {
-                            await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
-                            dbfile.Remove(line);
-                            ok = (hash == ta.ContentHash);
+                            TaggedAdornment ta; ok = dbfile.TryGetValue(line, out ta);
+                            if (ok)
+                            {
+                                await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
+                                dbfile.Remove(line);
+                                ok = (hash == ta.ContentHash);
+                            }
                         }
+                        if (!ok) await SendErrorAsync($"ERROR\tHost database lacks '{cmd}'", cancel).ConfigureAwait(false);
                     }
-                    if (!ok) await SendErrorAsync($"ERROR\tHost database lacks '{cmd}'", cancel).ConfigureAwait(false);
+                    else if (cmds[1] == "add")
+                    {
+                        if (watchFile == null) { await SendErrorAsync($"ERROR\tHost received 'REPLAY add' but isn't watching any files", cancel).ConfigureAwait(false); continue; }
+                        if (!Database2.ContainsKey(watchFile)) Database2[watchFile] = new Dictionary<int, TaggedAdornment>();
+                        var dbfile = Database2[watchFile];
+                        var ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
+                        await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                        dbfile[line] = ta;
+                    }
+                    continue;
                 }
-                else if (cmds[1] == "add")
-                {
-                    if (!Database2.ContainsKey(watchFile)) Database2[watchFile] = new Dictionary<int, TaggedAdornment>();
-                    var dbfile = Database2[watchFile];
-                    var ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
-                    await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
-                    dbfile[line] = ta;
-                }
-                continue;
-            }
 
-            if (readProcessTask?.IsCompleted == true)
-            {
-                string msg; try { msg = readProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
-                readProcessTask = (getProcessTask.Status == TaskStatus.RanToCompletion) ? getProcessTask.Result.ReadLineAsync(cancel) : null;
-                await SendErrorAsync($"ERROR\tHost expected REPLAY, got '{msg}'", cancel).ConfigureAwait(false);
-                continue;
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("END\t"))
+                {
+                    var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+                    var cmds = cmd.Split(new[] { '\t' });
+                    if (cmds.Length < 2 || (cmds[1] != "run" && cmds[1] != "watch")
+                        || (cmds[1] == "watch" && cmds.Length != 3))
+                    {
+                        await SendErrorAsync($"ERROR\tHost expected 'END run | END watch correlation', got '{cmd}'", cancel).ConfigureAwait(false); continue;
+                    }
+                    if (cmds[1] == "run")
+                    {
+                        runProcessTcs?.TrySetResult(null);
+                    }
+                    else if (cmds[1] == "watch")
+                    {
+                        string correlation = cmds[2];
+                        if (watchTcs.Count == 0) await SendErrorAsync($"ERROR\tNot expecting '{cmd}'", cancel).ConfigureAwait(false);
+                        else if (watchTcs.First.Value.Item1 != correlation) await SendErrorAsync($"ERROR\tExpecting 'END watch {watchTcs.First.Value.Item1}', got '{cmd}'",cancel).ConfigureAwait(false);
+                        else { watchTcs.First.Value.Item2.TrySetResult(null); watchTcs.RemoveFirst(); }
+                    }
+                    continue;
+                }
+
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("ERROR\t"))
+                {
+                    var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+                    await SendErrorAsync($"CLIENT{cmd}", cancel);
+                    continue;
+                }
+
+
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("DEBUG\t"))
+                {
+                    var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+                    Console.WriteLine($"< {cmd}");
+                    continue;
+                }
+
+                if (readProcessTask?.IsCompleted == true)
+                {
+                    string msg; try { msg = readProcessTask.GetAwaiter().GetResult(); } catch (Exception ex) { msg = ex.Message; }
+                    readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
+                    await SendErrorAsync($"ERROR\tHost expected REPLAY, got '{msg}'", cancel).ConfigureAwait(false);
+                    continue;
+                }
+
             }
 
         }
-
+        catch (OperationCanceledException)
+        {
+            runProcessTcs?.TrySetCanceled();
+            foreach (var tcs in watchTcs) tcs.Item2.TrySetCanceled();
+            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetCanceled();
+        }
+        catch (Exception ex)
+        {
+            runProcessTcs?.TrySetException(ex);
+            foreach (var tcs in watchTcs) tcs.Item2.TrySetException(ex);
+            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetException(ex);
+            throw;
+        }
+        finally
+        {
+            runProcessTcs?.TrySetResult(null);
+            foreach (var tcs in watchTcs) tcs.Item2.TrySetResult(null);
+            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetResult(null);
+        }
     }
 
 
@@ -781,7 +872,7 @@ class AsyncProcess : IDisposable
         {
             var p = Interlocked.Exchange(ref Process, null);
             if (p == null) return;
-            if (!p.HasExited) { p.Kill(); await Task.Run(() => Process.WaitForExit()).ConfigureAwait(false); }
+            if (!p.HasExited) { p.Kill(); await Task.Run(() => p.WaitForExit()).ConfigureAwait(false); }
             p.Dispose();
         }
         catch (OperationCanceledException)
