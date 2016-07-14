@@ -269,7 +269,7 @@ class ReplayHost : IDisposable
                         foreach (var entry in Database2[file])
                         {
                             if (entry.Key < line) dbfile[entry.Key] = entry.Value;
-                            if (line <= entry.Key && entry.Key < line + count) { }
+                            else if (line <= entry.Key && entry.Key < line + count) { }
                             else dbfile[entry.Key + newcount - count] = entry.Value.WithLine(entry.Key + newcount - count);
                         }
                         Database2[file] = dbfile;
@@ -353,7 +353,11 @@ class ReplayHost : IDisposable
                         if (watchFile == null) { await SendErrorAsync($"ERROR\tHost received 'REPLAY add' but isn't watching any files", cancel).ConfigureAwait(false); continue; }
                         if (!Database2.ContainsKey(watchFile)) Database2[watchFile] = new Dictionary<int, TaggedAdornment>();
                         var dbfile = Database2[watchFile];
-                        var ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
+                        TaggedAdornment ta; if (dbfile.TryGetValue(line, out ta))
+                        {
+                            await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
+                        }
+                        ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
                         await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
                         dbfile[line] = ta;
                     }
@@ -394,7 +398,7 @@ class ReplayHost : IDisposable
                 if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("DEBUG\t"))
                 {
                     var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
-                    Console.WriteLine($"< {cmd}");
+                    await SendErrorAsync($"CLIENT{cmd}", cancel);
                     continue;
                 }
 
@@ -433,6 +437,16 @@ class ReplayHost : IDisposable
         }
     }
 
+    async Task DumpAsync(string msg, Dictionary<string, Dictionary<int, TaggedAdornment>> Database2, string fn, CancellationToken cancel)
+    {
+        await SendErrorAsync($"DEBUG\t{msg}", cancel).ConfigureAwait(false);
+        if (fn == null || !Database2.ContainsKey(fn)) { await SendErrorAsync("DEBUG\t<no files>",cancel).ConfigureAwait(false); return; }
+        var dbfile = Database2[fn];
+        foreach (var kv in dbfile)
+        {
+            await SendErrorAsync($"DEBUG\t({kv.Key}): {kv.Value} hash={kv.Value.ContentHash}", cancel).ConfigureAwait(false); ;
+        }
+    }
 
     async Task<AsyncProcess> GetProcessAsync(Project project, List<TaggedDiagnostic> database, Task<AsyncProcess> prevTask, CancellationToken cancel)
     {

@@ -7,7 +7,7 @@ using System.Threading.Tasks.Dataflow;
 
 namespace System.Runtime.CompilerServices
 {
-    public class Replay
+    public static class Replay
     {
         public static T Log<T>(T data, string id, string file, int line, int reason)
         {
@@ -43,7 +43,7 @@ namespace System.Runtime.CompilerServices
             
             public LineItem(string file, int line, string content)
             {
-                File = file; Line = line; Content = content; ContentHash = content?.GetHashCode() ?? 0;
+                File = file; Line = line; Content = content; ContentHash = content?.GetStableHashCode() ?? 0;
             }
         }
 
@@ -132,9 +132,6 @@ namespace System.Runtime.CompilerServices
                             SystemOut.WriteLine($"ERROR\tExpected 'WATCH correlation file line count nhashes ...', got '{cmd}'"); continue;
                         }
 
-                        //SystemOut.WriteLine($"DEBUG\tGot watch. My current belief is below. Got '{cmd}'");
-                        //foreach (var watch in watchHashes) SystemOut.WriteLine($"DEBUG\tcurrent ({watch.Key}) hash={watch.Value}");
-
                         watchFile = file; watchLine = line; watchCount = count;
 
                         for (int i=0; i<nhashes*2; i+=2)
@@ -144,18 +141,12 @@ namespace System.Runtime.CompilerServices
                             watchHashes[line] = hash;
                         }
 
-                        //SystemOut.WriteLine($"DEBUG\tMy updated belief is below.");
-                        //foreach (var watch in watchHashes) SystemOut.WriteLine($"DEBUG\tupdated ({watch.Key}) hash={watch.Value}");
-
-                        //SystemOut.WriteLine($"DEBUG\tChecking range watchFile={watchFile} watchLine={watchLine} watchCount={watchCount}");
-
                         if (watchFile != null && Database.ContainsKey(watchFile))
                         {
                             var dbfile = Database[watchFile];
                             foreach (var kv in dbfile)
                             {
                                 var li = kv.Value; int hash;
-                                //SystemOut.WriteLine($"DEBUG\tConsider ({li.Line}) hash={li.ContentHash}");
                                 if (li.Line < watchLine || li.Line >= watchLine + watchCount) continue;
                                 if (watchHashes.TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
                                 SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
@@ -178,30 +169,19 @@ namespace System.Runtime.CompilerServices
                     var li = queueTask.Result;
                     queueTask = Queue.ReceiveAsync();
 
-                    //SystemOut.WriteLine($"DEBUG\tLOG {li.File}({li.Line}): {li.Content} hash={li.ContentHash}");
-
                     if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
                     var dbfile = Database[li.File];
                     dbfile[li.Line] = li;
 
-                    //SystemOut.WriteLine($"DEBUG\tDoes this log match watchFile={watchFile} watchLine={watchLine} watchCount={watchCount}?");
                     if (watchFile == li.File && watchLine <= li.Line && li.Line < watchLine + watchCount)
                     {
-                        //SystemOut.WriteLine($"DEBUG\tIn range");
                         int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
                         {
-                            //SystemOut.WriteLine($"DEBUG\tHash absent or wrong in host");
+                            var s = li.Content;
+                            SystemOut.WriteLine($"DEBUG\tsending content='{li.Content}' hash='{li.ContentHash}'");
                             SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
                             watchHashes[li.Line] = li.ContentHash;
                         }
-                        else
-                        {
-                            //SystemOut.WriteLine($"DEBUG\tHash present and correct in host");
-                        }
-                    }
-                    else
-                    {
-                        //SystemOut.WriteLine($"DEBUG\tOut of range");
                     }
                     continue;
                 }
@@ -230,6 +210,25 @@ namespace System.Runtime.CompilerServices
             }
         }
 
+
+        private static int GetStableHashCode(this string str)
+        {
+            unchecked
+            {
+                int hash1 = (5381 << 16) + 5381;
+                int hash2 = hash1;
+
+                for (int i = 0; i < str.Length; i += 2)
+                {
+                    hash1 = ((hash1 << 5) + hash1) ^ str[i];
+                    if (i == str.Length - 1)
+                        break;
+                    hash2 = ((hash2 << 5) + hash2) ^ str[i + 1];
+                }
+
+                return hash1 + (hash2 * 1566083941);
+            }
+        }
 
     }
 }

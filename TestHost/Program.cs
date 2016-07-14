@@ -49,8 +49,11 @@ class Program
         var host = new ReplayHost(true);
         host.OnDiagnosticChange += (isAdd, tag, diagnostic, deferral, cancel) =>
         {
-            if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
-            else Console.WriteLine($"-D{tag}");
+            if (diagnostic.Severity == DiagnosticSeverity.Warning || diagnostic.Severity == DiagnosticSeverity.Error)
+            {
+                if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
+                else Console.WriteLine($"-D{tag}");
+            }
             deferral.SetResult(null);
         };
         host.OnAdornmentChange += (isAdd, tag, line, content, deferral, cancel) =>
@@ -69,10 +72,10 @@ class Program
         Console.WriteLine("VIEW");
         await host.ViewHasChangedAsync("c:\\a.csx", 0, 10);
         Console.WriteLine("CHANGE");
-        txt = "int x = 17;\r\n\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
+        txt = "int x = 15;\r\nint y = x+3;\r\n\r\nSystem.Console.WriteLine(y);\r\n";
         document = document.WithText(SourceText.From(txt));
         project = document.Project;
-        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 0, 1, 2);
+        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 2);
         Console.WriteLine("DONE");
     }
 
