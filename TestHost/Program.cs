@@ -47,7 +47,7 @@ class Program
         project = document.Project;
 
         var host = new ReplayHost(true);
-        host.OnDiagnosticChange += (isAdd, tag, diagnostic, deferral, cancel) =>
+        host.DiagnosticChanged += (isAdd, tag, diagnostic, deferral, cancel) =>
         {
             if (diagnostic.Severity == DiagnosticSeverity.Warning || diagnostic.Severity == DiagnosticSeverity.Error)
             {
@@ -56,26 +56,34 @@ class Program
             }
             deferral.SetResult(null);
         };
-        host.OnAdornmentChange += (isAdd, tag, line, content, deferral, cancel) =>
+        host.AdornmentChanged += (isAdd, tag, line, content, deferral, cancel) =>
         {
             if (isAdd) Console.WriteLine($"+A{tag}: ({line}) {content}");
             else Console.WriteLine($"-A{tag}");
             deferral.SetResult(null);
         };
-        host.OnError += (error, deferral, cancel) =>
+        host.Erred += (error, deferral, cancel) =>
         {
             Console.WriteLine(error);
             deferral.SetResult(null);
         };
+
         Console.WriteLine("PROJECT");
         await host.DocumentHasChangedAsync(project, null, 0, 0, 0);
         Console.WriteLine("VIEW");
         await host.ViewHasChangedAsync("c:\\a.csx", 0, 10);
+
         Console.WriteLine("CHANGE");
-        txt = "int x = 15;\r\nint y = x+3;\r\n\r\nSystem.Console.WriteLine(y);\r\n";
+        //txt = "int x = 15;\r\nint y = x+3;\r\n\r\nSystem.Console.WriteLine(y);\r\n";
+        //document = document.WithText(SourceText.From(txt));
+        //project = document.Project;
+        //await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 2);
+        txt = "int x = 15;\r\nint y = x+2;d\r\nSystem.Console.WriteLine(y);\r\n";
         document = document.WithText(SourceText.From(txt));
         project = document.Project;
-        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 2);
+        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 1);
+
+
         Console.WriteLine("DONE");
     }
 

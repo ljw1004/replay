@@ -95,9 +95,9 @@ class ReplayHost : IDisposable
     public delegate void AdornmentChangedHandler(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral, CancellationToken cancel);
-    public event AdornmentChangedHandler OnAdornmentChange;
-    public event DiagnosticChangedHandler OnDiagnosticChange;
-    public event ReplayHostError OnError;
+    public event AdornmentChangedHandler AdornmentChanged;
+    public event DiagnosticChangedHandler DiagnosticChanged;
+    public event ReplayHostError Erred;
 
     public ReplayHost(bool editorHasOwnDatabase)
     {
@@ -141,7 +141,7 @@ class ReplayHost : IDisposable
 
     private Task SendAdornmentChangeAsync(bool isAdd, int tag, int line, string content, CancellationToken cancel)
     {
-        var c = OnAdornmentChange;
+        var c = AdornmentChanged;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
         c.Invoke(isAdd, tag, line, content, tcs, cancel);
@@ -150,7 +150,7 @@ class ReplayHost : IDisposable
 
     private Task SendDiagnosticChangeAsync(bool isAdd, int tag, Diagnostic diagnostic, CancellationToken cancel)
     {
-        var c = OnDiagnosticChange;
+        var c = DiagnosticChanged;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
         c.Invoke(isAdd, tag, diagnostic, tcs, cancel);
@@ -159,7 +159,7 @@ class ReplayHost : IDisposable
 
     private Task SendErrorAsync(string error, CancellationToken cancel)
     {
-        var c = OnError;
+        var c = Erred;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
         c.Invoke(error, tcs, cancel);
@@ -224,6 +224,7 @@ class ReplayHost : IDisposable
 
                 cancel.ThrowIfCancellationRequested();
 
+
                 if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
                 {
                     // This is the first time we hear that the new process is up
@@ -278,7 +279,7 @@ class ReplayHost : IDisposable
                     // Rebuild + restart the process
                     getProcessCancel?.Cancel();
                     getProcessCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-                    getProcessTask = GetProcessAsync(cmdproject, Database1, getProcessTask, getProcessCancel.Token);
+                    getProcessTask = GetProcessAsync(cmdproject, Database1, getProcessTask, runProcessTcs, getProcessCancel.Token);
                     readProcessTask = null;
                     continue;
                 }
@@ -448,7 +449,7 @@ class ReplayHost : IDisposable
         }
     }
 
-    async Task<AsyncProcess> GetProcessAsync(Project project, List<TaggedDiagnostic> database, Task<AsyncProcess> prevTask, CancellationToken cancel)
+    async Task<AsyncProcess> GetProcessAsync(Project project, List<TaggedDiagnostic> database, Task<AsyncProcess> prevTask, TaskCompletionSource<object> runProcessTcs, CancellationToken cancel)
     {
         AsyncProcess prevProcess = null;
         if (prevTask != null) try { prevProcess = await prevTask.ConfigureAwait(false); } catch (Exception) { }
@@ -463,11 +464,16 @@ class ReplayHost : IDisposable
 
         var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var originalDiagnostics = originalComp.GetDiagnostics(cancel);
-        project = await InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
-        var results = await BuildAsync(project, cancel).ConfigureAwait(false);
-        var annotatedDiagnostics = results.Diagnostics;
-        var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default);
-        foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
+        bool success = false; string outputFilePath = null;
+        if (!originalDiagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
+        {
+            project = await InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
+            var results = await BuildAsync(project, cancel).ConfigureAwait(false);
+            success = results.Success; outputFilePath = results.ReplayOutputFilePath;
+            var annotatedDiagnostics = results.Diagnostics;
+            var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default);
+            foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
+        }
 
         // Remove+add diagnostics as needed
         foreach (var td in database.ToArray())
@@ -484,8 +490,14 @@ class ReplayHost : IDisposable
             database.Add(new TaggedDiagnostic(tag,d));
         }
 
+        if (!success)
+        {
+            runProcessTcs?.TrySetResult(null);
+            return null;
+        }
+
         // Launch the process
-        var process = await LaunchProcessAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
+        var process = await LaunchProcessAsync(outputFilePath, cancel).ConfigureAwait(false);
         return process;
     }
 
@@ -504,6 +516,7 @@ class ReplayHost : IDisposable
             {
                 if (File.Exists(fn + "/ReplayClient.cs")) break;
             }
+            if (fn == null) fn = @"C:\Users\lwischik\source\Repos\replay";
             if (fn == null) throw new Exception("class 'Replay' not found");
             fn = fn + "/ReplayClient.cs";
             var document = project.AddDocument("ReplayClient.cs", File.ReadAllText(fn), null, fn);

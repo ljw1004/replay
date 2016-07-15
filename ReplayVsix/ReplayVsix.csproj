@@ -44,9 +44,11 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\TestWebsocketService\ReplayHost.cs">
+      <Link>ReplayHost.cs</Link>
+    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ReplayAdornment.cs" />
-    <Compile Include="ReplayHost.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="project.json" />

@@ -9,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -44,9 +45,12 @@ internal sealed class ReplayAdornment
     DocumentId DocumentId;
 
     // Replay
-    ReplayHostManager ReplayManager;
+    static Dictionary<string, Tuple<ReplayHost, int>> ReplayHosts = new Dictionary<string, Tuple<ReplayHost, int>>();
+    ReplayHost ReplayHost;
     VersionStamp ReplayDocumentVersionStamp;
 
+    Document Document => Initialize() ? Workspace.CurrentSolution.GetDocument(DocumentId) : null;
+    Project Project => Document?.Project;
 
 
     public ReplayAdornment(Microsoft.VisualStudio.Text.Editor.IWpfTextView view)
@@ -56,67 +60,102 @@ internal sealed class ReplayAdornment
 
         View = view;
         View.LayoutChanged += OnLayoutChanged;
-        View.TextBuffer.Changed += 
+        View.TextBuffer.Changed += OnTextBufferChanged;
         View.ViewportWidthChanged += OnViewportWidthChanged;
         View.Closed += OnClosed;
     }
 
-    private void OnClosed(object sender, EventArgs e)
+
+    bool Initialize()
     {
-        ReplayManager.LineChanged -= OnReplayLineChanged;
-        if (ReplayManager != null) ReplayManager.Dispose(); ReplayManager = null;
+        if (DocumentId == null)
+        {
+            var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+            var activeDocument = dte?.ActiveDocument; // sometimes we're constructed/invoked before ActiveDocument has been set
+            if (activeDocument != null) DocumentId = Workspace.CurrentSolution.GetDocumentIdsWithFilePath(activeDocument.FullName).FirstOrDefault();
+            if (DocumentId == null) return false;
+        }
+
+        var document = Workspace.CurrentSolution.GetDocument(DocumentId);
+        var project = document?.Project;
+        if (project == null) return false;
+
+        f();
+        if (ReplayHost == null)
+        {
+            lock (ReplayHosts)
+            {
+                Tuple<ReplayHost, int> t;
+                if (ReplayHosts.TryGetValue(project.OutputFilePath, out t)) t = Tuple.Create(t.Item1, t.Item2 + 1);
+                else t = Tuple.Create(new ReplayHost(false), 1);
+                ReplayHosts[project.OutputFilePath] = t;
+                ReplayHost = t.Item1;
+            }
+            ReplayHost.AdornmentChanged += ReplayHostAdornmentChanged;
+            ReplayHost.Erred += ReplayHostErred;
+        }
+
+        return true;
     }
 
-    internal void OnLayoutChanged(object sender, Microsoft.VisualStudio.Text.Editor.TextViewLayoutChangedEventArgs e)
+    void f()
+    {
+        BufferBlock<int> x = new BufferBlock<int>();
+    }
+
+    private void ReplayHostAdornmentChanged(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel)
+    {
+        if (isAdd) Debug.WriteLine($"+A{tag} - ({line}):{content}");
+        else Debug.WriteLine($"-A{tag}");
+
+        View.VisualElement.Dispatcher.BeginInvoke((Action)delegate
+        {
+            //var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == line) as TextBlock;
+            //if (existing != null) { existing.Text = msg; return; }
+            //var snapshotLine = View.TextSnapshot.GetLineFromLineNumber(line);
+            //var span = new SnapshotSpan(snapshotLine.Start, snapshotLine.End);
+            //var geometry = View.TextViewLines.GetMarkerGeometry(span);
+            //if (geometry == null) return;
+            //var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {msg}" };
+            //Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
+            //Canvas.SetTop(adornment, geometry.Bounds.Top);
+            //View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, span, line, adornment, null);
+        });
+        deferral.SetResult(null);
+    }
+
+    private void ReplayHostErred(string error, TaskCompletionSource<object> deferral, CancellationToken cancel)
+    {
+        Debug.WriteLine(error);
+        deferral.SetResult(null);
+    }
+
+
+    async void OnTextBufferChanged(object sender, TextContentChangedEventArgs e)
+    {
+        if (!Initialize()) return;
+        foreach (var change in e.Changes)
+        {
+            var start = e.Before.GetLineNumberFromPosition(change.OldPosition);
+            var count = e.Before.GetLineNumberFromPosition(change.OldPosition + change.OldLength) - start;
+            var start2 = e.After.GetLineNumberFromPosition(change.NewPosition);
+            var newcount = e.After.GetLineNumberFromPosition(change.NewPosition + change.NewLength) - start2;
+            if (start != start2) Debug.WriteLine("oops!");
+            await ReplayHost.DocumentHasChangedAsync(Project, Document.FilePath, start, count, newcount);
+        }
+    }
+
+    async void OnLayoutChanged(object sender, Microsoft.VisualStudio.Text.Editor.TextViewLayoutChangedEventArgs e)
     {
         // Raised whenever the rendered text displayed in the ITextView changes - whenever the view does a layout
         // (which happens when DisplayTextLineContainingBufferPosition is called or in response to text or classification
         // changes), and also when the view scrolls or when its size changes.
         // Responsible for adding the adornment to any reformatted lines.
 
-        if (DocumentId == null)
-        {
-            var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
-            var activeDocument = dte?.ActiveDocument; // sometimes we're constructed/invoked before ActiveDocument has been set
-            if (activeDocument != null) DocumentId = Workspace.CurrentSolution.GetDocumentIdsWithFilePath(activeDocument.FullName).FirstOrDefault();
-            if (DocumentId == null) return;
-        }
-
-        var document = Workspace.CurrentSolution.GetDocument(DocumentId);
-        if (document == null) return;
-        if (ReplayManager == null)
-        {
-            ReplayManager = ReplayHostManager.Create(document.Project);
-            ReplayManager.LineChanged += OnReplayLineChanged;
-        }
-        VersionStamp docVersion; if (!document.TryGetTextVersion(out docVersion)) return;
-        if (docVersion != ReplayDocumentVersionStamp)
-        {
-            ReplayDocumentVersionStamp = docVersion;
-            ReplayManager.TriggerReplayAsync(document.Project);
-        }
-
+        if (!Initialize()) return;
         var start = View.TextViewLines.FirstVisibleLine.Start.GetContainingLine().LineNumber;
         var end = View.TextViewLines.LastVisibleLine.End.GetContainingLine().LineNumber;
-        ReplayManager.WatchAndMissing(document, start, end - start, e.NewOrReformattedLines.Select(line => line.Start.GetContainingLine().LineNumber));
-    }
-
-
-    private void OnReplayLineChanged(int line, string msg)
-    {
-        View.VisualElement.Dispatcher.BeginInvoke((Action)delegate
-        {
-            var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == line) as TextBlock;
-            if (existing != null) { existing.Text = msg; return; }
-            var snapshotLine = View.TextSnapshot.GetLineFromLineNumber(line);
-            var span = new SnapshotSpan(snapshotLine.Start, snapshotLine.End);
-            var geometry = View.TextViewLines.GetMarkerGeometry(span);
-            if (geometry == null) return;
-            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {msg}" };
-            Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
-            Canvas.SetTop(adornment, geometry.Bounds.Top);
-            View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, span, line, adornment, null);
-        });
+        await ReplayHost.ViewHasChangedAsync(Document.FilePath, start, end - start + 1);
     }
 
     private void OnViewportWidthChanged(object sender, EventArgs e)
@@ -130,95 +169,27 @@ internal sealed class ReplayAdornment
         }
     }
 
-}
-
-
-class ReplayHostManager : IDisposable
-{
-    static Dictionary<string, ReplayHostManager> projects = new Dictionary<string, ReplayHostManager>();
-
-    int RefCount;
-    string ProjectOutputFilePath;
-    CancellationTokenSource Cancel;
-    Task Task;
-    //
-    string WatchFile;  int WatchLine, WatchLineCount; ImmutableArray<int> WatchMissing;
-    TaskCompletionSource<object> WatchChanged;
-    public event Action<int, string> LineChanged;
-
-    public void TriggerReplayAsync(Project project)
+    void OnClosed(object sender, EventArgs e)
     {
-        Cancel?.Cancel();
-        Cancel = new CancellationTokenSource();
-        Task = ReplayInnerAsync(project, Task, Cancel.Token);
-    }
+        if (ReplayHost == null) return;
+        ReplayHost.AdornmentChanged -= ReplayHostAdornmentChanged;
+        ReplayHost.Erred -= ReplayHostErred;
 
-    public void WatchAndMissing(Document document, int line, int lineCount, IEnumerable<int> missing)
-    {
-        WatchFile = document.FilePath;
-        WatchLine = line;
-        WatchLineCount = lineCount;
-        WatchMissing = missing.ToImmutableArray();
-        WatchChanged?.TrySetResult(null);
-    }
-
-    async Task ReplayInnerAsync(Project project, Task prevTask, CancellationToken cancel)
-    {
-        if (prevTask != null) try { await prevTask.ConfigureAwait(false); } catch (Exception) { }
-        if (project == null) return;
-        if (!File.Exists(project.OutputFilePath)) return; // if the user has done at least one build, then all needed DLLs will likely be in place
-
-        project = await ReplayHost.InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
-        var results = await ReplayHost.BuildAsync(project, cancel).ConfigureAwait(false);
-        if (!results.Success) return; // don't wipe out the existing results in case of error
-        var host = await ReplayHost.RunAsync(results.ReplayOutputFilePath, cancel).ConfigureAwait(false);
-        if (WatchLineCount != 0) host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, null);
-        WatchChanged = new TaskCompletionSource<object>();
-        var replayTask = host.ReadReplayAsync(cancel);
-        while (true)
+        ReplayHost toDispose = null;
+        lock (ReplayHosts)
         {
-            await Task.WhenAny(WatchChanged.Task, replayTask).ConfigureAwait(false);
-            if (WatchChanged.Task.IsCompleted)
-            {
-                host.WatchAndMissing(WatchFile, WatchLine, WatchLineCount, WatchMissing);
-                WatchChanged = new TaskCompletionSource<object>();
-            }
-            else if (replayTask.IsCompleted)
-            {
-                var replay = await replayTask.ConfigureAwait(false);
-                if (replay == null) return;
-                LineChanged?.Invoke(replay.Item1, replay.Item2);
-                replayTask = host.ReadReplayAsync(cancel);
-            }
+            var t = ReplayHosts[Project.OutputFilePath];
+            t = Tuple.Create(t.Item1, t.Item2 - 1);
+            if (t.Item2 == 0) { ReplayHosts.Remove(Project.OutputFilePath); toDispose = t.Item1; }
+            else { ReplayHosts[Project.OutputFilePath] = t; }
         }
+        toDispose?.Dispose();
+
+        ReplayHost = null;
     }
 
-    public static ReplayHostManager Create(Project project)
-    {
-        if (project == null || project.OutputFilePath == null) throw new ArgumentNullException(nameof(project));
-        lock (projects)
-        {
-            ReplayHostManager r;
-            if (projects.TryGetValue(project.OutputFilePath, out r)) { r.RefCount++; return r; }
-            r = new ReplayHostManager { RefCount = 1, ProjectOutputFilePath = project.OutputFilePath };
-            projects[project.OutputFilePath] = r;
-            return r;
-        }
-    }
 
-    public void Dispose()
-    {
-        // TODO: this is weird that I'm using the same instance of ReplayManager. Imagine if someone
-        // calls ForProject() and then disposes of it twice. The proper result is that they should only
-        // decrement the refcount once (since Dispose is meant to be idempotent). But what will happen
-        // here is it'll be decremented twice.
-        if (ProjectOutputFilePath == null) return;
-        lock (this)
-        {
-            RefCount--;
-            if (RefCount == 0) { lock (projects) projects.Remove(ProjectOutputFilePath); ProjectOutputFilePath = null; Cancel?.Cancel(); }
-        }
-    }
+
 
 }
 
