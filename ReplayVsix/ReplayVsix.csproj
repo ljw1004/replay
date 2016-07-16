@@ -44,6 +44,11 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="..\ReplayClient.cs">
+      <Link>ReplayClient.cs</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
     <Compile Include="..\TestWebsocketService\ReplayHost.cs">
       <Link>ReplayHost.cs</Link>
     </Compile>

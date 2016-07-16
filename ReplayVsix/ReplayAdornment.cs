@@ -128,8 +128,8 @@ internal sealed class ReplayAdornment
             var span = View.TextViewLines.FirstVisibleLine.Extent;
             var geometry = View.TextViewLines.GetMarkerGeometry(span);
             if (geometry == null) return;
-            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.PaleVioletRed, Opacity = 0.2, Text = $"! {error}" };
-            Canvas.SetLeft(adornment, View.ViewportRight - adornment.Width);
+            var adornment = new TextBlock { Width = View.ViewportWidth, Height = geometry.Bounds.Height, Background = Brushes.PaleVioletRed, Text = $"! {error}" };
+            Canvas.SetLeft(adornment, View.ViewportLeft);
             Canvas.SetTop(adornment, View.ViewportTop);
             View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.ViewportRelative, span, -1, adornment, null);
         });

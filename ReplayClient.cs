@@ -3,7 +3,6 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 
 namespace System.Runtime.CompilerServices
 {
@@ -32,7 +31,7 @@ namespace System.Runtime.CompilerServices
         static HookOut MyOut = new HookOut();
         static HookIn MyIn = new HookIn();
 
-        static BufferBlock<LineItem> Queue = new BufferBlock<LineItem>();
+        static Channel<LineItem> Queue = new Channel<LineItem>();
 
         private struct LineItem
         {
@@ -228,6 +227,33 @@ namespace System.Runtime.CompilerServices
                 return hash1 + (hash2 * 1566083941);
             }
         }
+
+
+        private class Channel<T>
+        {
+            Queue<T> posts = new Queue<T>();
+            Queue<TaskCompletionSource<T>> recvs = new Queue<TaskCompletionSource<T>>();
+
+            public Task<T> ReceiveAsync()
+            {
+                lock (posts)
+                {
+                    if (posts.Count > 0) return Task.FromResult(posts.Dequeue());
+                    else { var tcs = new TaskCompletionSource<T>(); recvs.Enqueue(tcs); return tcs.Task; }
+                }
+            }
+
+            public void Post(T value)
+            {
+                lock (posts)
+                {
+                    if (recvs.Count > 0) recvs.Dequeue().TrySetResult(value);
+                    else posts.Enqueue(value);
+                }
+            }
+        }
+
+
 
     }
 }

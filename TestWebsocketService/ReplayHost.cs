@@ -516,7 +516,6 @@ class ReplayHost : IDisposable
             {
                 if (File.Exists(fn + "/ReplayClient.cs")) break;
             }
-            if (fn == null) fn = @"C:\Users\lwischik\source\Repos\replay";
             if (fn == null) throw new Exception("class 'Replay' not found");
             fn = fn + "/ReplayClient.cs";
             var document = project.AddDocument("ReplayClient.cs", File.ReadAllText(fn), null, fn);
@@ -561,6 +560,7 @@ class ReplayHost : IDisposable
 
         if (project.OutputFilePath != null)
         {
+            var dir = project.OutputFilePath.Replace("\\obj\\", "\\bin");
             // is a regular app
             for (int i = 0; ; i++)
             {
