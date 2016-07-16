@@ -256,7 +256,7 @@ class ReplayHost : IDisposable
                 {
                     var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
                     var cmdproject = cmd.Item2;
-                    runProcessTcs?.TrySetCanceled(); runProcessTcs = cmd.Item3;
+                    runProcessTcs?.TrySetResult(null); runProcessTcs = cmd.Item3;
                     foreach (var tcs in watchTcs) tcs.Item2.TrySetCanceled();
                     watchTcs.Clear();
                     var cmds = cmd.Item1.Split(new[] { '\t' });
@@ -302,7 +302,7 @@ class ReplayHost : IDisposable
                     //
                     if (watchFile == file && watchLine == line && watchCount == count) { tcs.TrySetResult(null); continue; }
                     watchFile = file; watchLine = line; watchCount = count;
-                    if (getProcessTask?.Status != TaskStatus.RanToCompletion) { tcs.TrySetResult(null); continue; }
+                    if (getProcessTask?.Status != TaskStatus.RanToCompletion || getProcessTask.Result == null) { tcs.TrySetResult(null); continue; }
 
                     // WATCH correlation file line count nhashes line0 hash0 ... lineN hashN
                     var correlation = ++TagCounter;
@@ -730,6 +730,16 @@ class TreeRewriter : CSharpSyntaxRewriter
                 yield return Visit(member) as MemberDeclarationSyntax;
             }
         }
+    }
+
+    public override SyntaxNode VisitMethodDeclaration(MethodDeclarationSyntax node)
+    {
+        node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
+        if (node.Body == null) return node;
+        var log = SyntaxFactory_Log(null, null, null, null, 9); // TODO: fill this out properly
+        // for now I've just put in a dummy to make sure the ReplayClient class has its static ctor executed
+        node = node.WithBody(node.Body.WithStatements(node.Body.Statements.Insert(0, SyntaxFactory.ExpressionStatement(log))));
+        return node;
     }
 
     public override SyntaxNode VisitVariableDeclaration(VariableDeclarationSyntax declaration)

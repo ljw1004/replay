@@ -80,7 +80,6 @@ internal sealed class ReplayAdornment
         var project = document?.Project;
         if (project == null) return false;
 
-        f();
         if (ReplayHost == null)
         {
             lock (ReplayHosts)
@@ -93,39 +92,47 @@ internal sealed class ReplayAdornment
             }
             ReplayHost.AdornmentChanged += ReplayHostAdornmentChanged;
             ReplayHost.Erred += ReplayHostErred;
+            var dummy = ReplayHost.DocumentHasChangedAsync(Project, null, -1, -1, -1);
         }
 
         return true;
     }
 
-    void f()
-    {
-        BufferBlock<int> x = new BufferBlock<int>();
-    }
 
     private void ReplayHostAdornmentChanged(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel)
     {
-        if (isAdd) Debug.WriteLine($"+A{tag} - ({line}):{content}");
-        else Debug.WriteLine($"-A{tag}");
-
         View.VisualElement.Dispatcher.BeginInvoke((Action)delegate
         {
-            //var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == line) as TextBlock;
-            //if (existing != null) { existing.Text = msg; return; }
-            //var snapshotLine = View.TextSnapshot.GetLineFromLineNumber(line);
-            //var span = new SnapshotSpan(snapshotLine.Start, snapshotLine.End);
-            //var geometry = View.TextViewLines.GetMarkerGeometry(span);
-            //if (geometry == null) return;
-            //var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {msg}" };
-            //Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
-            //Canvas.SetTop(adornment, geometry.Bounds.Top);
-            //View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, span, line, adornment, null);
+            var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == tag);
+            if (!isAdd && existing != null) View.GetAdornmentLayer(nameof(ReplayAdornment)).RemoveAdornment(existing.Adornment);
+            if (!isAdd) return;
+            if (existing != null) return;
+            var snapshotLine = View.TextSnapshot.GetLineFromLineNumber(line);
+            var span = new SnapshotSpan(snapshotLine.Start, snapshotLine.End);
+            var geometry = View.TextViewLines.GetMarkerGeometry(span);
+            if (geometry == null) return;
+            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.Yellow, Opacity = 0.2, Text = $"// {content}" };
+            Canvas.SetLeft(adornment, View.ViewportWidth - adornment.Width);
+            Canvas.SetTop(adornment, geometry.Bounds.Top);
+            View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.TextRelative, span, tag, adornment, null);
         });
         deferral.SetResult(null);
     }
 
     private void ReplayHostErred(string error, TaskCompletionSource<object> deferral, CancellationToken cancel)
     {
+        View.VisualElement.Dispatcher.BeginInvoke((Action)delegate
+        {
+            var existing = View.GetAdornmentLayer(nameof(ReplayAdornment)).Elements.FirstOrDefault(e => (int)e.Tag == -1)?.Adornment as TextBlock;
+            if (existing != null) { existing.Text = error; return; }
+            var span = View.TextViewLines.FirstVisibleLine.Extent;
+            var geometry = View.TextViewLines.GetMarkerGeometry(span);
+            if (geometry == null) return;
+            var adornment = new TextBlock { Width = 240, Height = geometry.Bounds.Height, Background = Brushes.PaleVioletRed, Opacity = 0.2, Text = $"! {error}" };
+            Canvas.SetLeft(adornment, View.ViewportRight - adornment.Width);
+            Canvas.SetTop(adornment, View.ViewportTop);
+            View.GetAdornmentLayer(nameof(ReplayAdornment)).AddAdornment(Microsoft.VisualStudio.Text.Editor.AdornmentPositioningBehavior.ViewportRelative, span, -1, adornment, null);
+        });
         Debug.WriteLine(error);
         deferral.SetResult(null);
     }

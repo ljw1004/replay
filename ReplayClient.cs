@@ -178,7 +178,6 @@ namespace System.Runtime.CompilerServices
                         int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
                         {
                             var s = li.Content;
-                            SystemOut.WriteLine($"DEBUG\tsending content='{li.Content}' hash='{li.ContentHash}'");
                             SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
                             watchHashes[li.Line] = li.ContentHash;
                         }

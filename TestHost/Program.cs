@@ -21,9 +21,10 @@ class Program
         if (d == null) throw new Exception("Sample projects directory not found");
         SampleProjectsDirectory = d + "/SampleProjects";
 
+        TestCodeInstrumentingAsync().GetAwaiter().GetResult();
         //TestScriptInstrumentingAsync().GetAwaiter().GetResult();
         //TestClientAsync().GetAwaiter().GetResult();
-        TestHostAsync().GetAwaiter().GetResult();
+        //TestHostAsync().GetAwaiter().GetResult();
     }
 
     static async Task TestScriptInstrumentingAsync()
@@ -33,6 +34,29 @@ class Program
         var project = workspace.AddProject(projectInfo);
         var src = SourceText.From(File.ReadAllText(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ScriptApplicationCS\CodeFile1.csx"));
         var document = workspace.AddDocument(project.Id, "CodeFile1.csx", src).WithSourceCodeKind(SourceCodeKind.Script);
+        document = await ReplayHost.InstrumentDocumentAsync(document, CancellationToken.None);
+        Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
+    }
+
+    static async Task TestCodeInstrumentingAsync()
+    {
+        var workspace = new AdhocWorkspace();
+        var projectInfo = ProjectInfo.Create(ProjectId.CreateNewId(), VersionStamp.Create(), "TestProject", "TestProject", LanguageNames.CSharp);
+        var project = workspace.AddProject(projectInfo);
+        var txt = @"
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(""hello"");
+        int x = 2;
+        Console.WriteLine(x);
+    }
+}
+";
+        var document = workspace.AddDocument(project.Id, "program.cs", SourceText.From(txt));
         document = await ReplayHost.InstrumentDocumentAsync(document, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
