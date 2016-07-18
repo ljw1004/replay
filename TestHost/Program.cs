@@ -21,9 +21,9 @@ class Program
         if (d == null) throw new Exception("Sample projects directory not found");
         SampleProjectsDirectory = d + "/SampleProjects";
 
-        TestCodeInstrumentingAsync().GetAwaiter().GetResult();
+        //TestCodeInstrumentingAsync().GetAwaiter().GetResult();
         //TestScriptInstrumentingAsync().GetAwaiter().GetResult();
-        //TestClientAsync().GetAwaiter().GetResult();
+        TestClientAsync().GetAwaiter().GetResult();
         //TestHostAsync().GetAwaiter().GetResult();
     }
 
@@ -93,9 +93,9 @@ class Program
         };
 
         Console.WriteLine("PROJECT");
-        await host.DocumentHasChangedAsync(project, null, 0, 0, 0);
+        await host.ChangeDocumentAsync(project, null, 0, 0, 0);
         Console.WriteLine("VIEW");
-        await host.ViewHasChangedAsync("c:\\a.csx", 0, 10);
+        await host.WatchAsync("c:\\a.csx", 0, 10);
 
         Console.WriteLine("CHANGE");
         //txt = "int x = 15;\r\nint y = x+3;\r\n\r\nSystem.Console.WriteLine(y);\r\n";
@@ -105,7 +105,7 @@ class Program
         txt = "int x = 15;\r\nint y = x+2;d\r\nSystem.Console.WriteLine(y);\r\n";
         document = document.WithText(SourceText.From(txt));
         project = document.Project;
-        await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 1);
+        await host.ChangeDocumentAsync(project, "c:\\a.csx", 1, 1, 1);
 
 
         Console.WriteLine("DONE");

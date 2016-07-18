@@ -92,7 +92,7 @@ internal sealed class ReplayAdornment
             }
             ReplayHost.AdornmentChanged += ReplayHostAdornmentChanged;
             ReplayHost.Erred += ReplayHostErred;
-            var dummy = ReplayHost.DocumentHasChangedAsync(Project, null, -1, -1, -1);
+            var dummy = ReplayHost.ChangeDocumentAsync(Project, null, -1, -1, -1);
         }
 
         return true;
@@ -148,7 +148,7 @@ internal sealed class ReplayAdornment
             var start2 = e.After.GetLineNumberFromPosition(change.NewPosition);
             var newcount = e.After.GetLineNumberFromPosition(change.NewPosition + change.NewLength) - start2;
             if (start != start2) Debug.WriteLine("oops!");
-            await ReplayHost.DocumentHasChangedAsync(Project, Document.FilePath, start, count, newcount);
+            await ReplayHost.ChangeDocumentAsync(Project, Document.FilePath, start, count, newcount);
         }
     }
 
@@ -162,7 +162,7 @@ internal sealed class ReplayAdornment
         if (!Initialize()) return;
         var start = View.TextViewLines.FirstVisibleLine.Start.GetContainingLine().LineNumber;
         var end = View.TextViewLines.LastVisibleLine.End.GetContainingLine().LineNumber;
-        await ReplayHost.ViewHasChangedAsync(Document.FilePath, start, end - start + 1);
+        await ReplayHost.WatchAsync(Document.FilePath, start, end - start + 1);
     }
 
     private void OnViewportWidthChanged(object sender, EventArgs e)

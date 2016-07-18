@@ -5,18 +5,20 @@ html, body {width: 100vw; height:100vh;margin:0;padding:0; background-color:blac
 font-family:Segoe UI}
 a {color: cyan; text-decoration: underline;}
 a:visited {color: cyan; text-decoration: underline;}
-#menu {position:fixed; top:0; left:0; width:7em; height:calc(100vh - 10ex); padding:0; background-color:#222222;}
-#menu p {background-color:#3B3B3B; padding-left:1.5em; padding-top:0.3ex; padding-bottom:0.7ex; font-size:smaller;}
+#menu {position:fixed; top:0; left:0; width:7em; height:calc(100vh - 20ex); padding:0; background-color:#222222;}
+#menu p {padding-left:1.5em; padding-top:0.3ex; padding-bottom:0.7ex; font-size:smaller; margin:0;}
+.selected {background-color:#3B3B3B; }
 #menu p a {color:white; text-decoration:none;}
 #menu p a:visited {color:white; text-decoration:none;}
-#container {position:fixed; top:0; left:7em; width:calc(100vw - 7em); height:calc(100vh - 10ex); background-color:#1E1E1E;}
-#logcontainer {position:fixed; top:calc(100vh - 10ex); left:0; width:100vw; height: 10ex; background-color:black;}
+#container {position:fixed; top:0; left:7em; width:calc(100vw - 7em); height:calc(100vh - 20ex); background-color:#1E1E1E;}
+#logcontainer {position:fixed; top:calc(100vh - 20ex); left:0; width:100vw; height: 20ex; background-color:black;}
 #log {width:100%;height:100%; font-size:xx-small;}
 </style>
 </head>
 <body>
 <div id="menu">
-<p><a href="/project1/file1.csx">file1.csx</a></p>
+<p class="selected"><a href="/ConsoleApp1/Main.csx">Main.csx</a></p>
+<p><a href="/ConsoleApp1/Program.cs">Program.cs</a></p>
 </div>
 <div id="container"></div>
 <div id="logcontainer"><div id="log"></div></div>

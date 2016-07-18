@@ -14,6 +14,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 
+// TODO: use strongly typed Command virtual class for queue
+// TODO: do deferrals properly
+
+
 // Client <-> Host <-> Editor
 // The host is always on the same machine as the replayer. They communicate by serialization (to ensure clean teardown)
 // The host and editor are in the same process (VSIX) or on remote machines (online).
@@ -124,14 +128,14 @@ class ReplayHost : IDisposable
         DisposeAsync().GetAwaiter().GetResult();
     }
 
-    public Task DocumentHasChangedAsync(Project project, string file, int line, int count, int newcount)
+    public Task ChangeDocumentAsync(Project project, string file, int line, int count, int newcount)
     {
         if (project == null) throw new ArgumentNullException(nameof(project));
         var tcs = new TaskCompletionSource<object>();
         Queue.Post(Tuple.Create($"CHANGE\t{file}\t{line}\t{count}\t{newcount}", project, tcs));
         return tcs.Task;
     }
-    public Task ViewHasChangedAsync(string file, int line, int count)
+    public Task WatchAsync(string file, int line, int count)
     {
         if (file == null) throw new ArgumentNullException(nameof(file));
         var tcs = new TaskCompletionSource<object>();
