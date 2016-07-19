@@ -23,8 +23,9 @@ class Program
 
         //TestCodeInstrumentingAsync().GetAwaiter().GetResult();
         //TestScriptInstrumentingAsync().GetAwaiter().GetResult();
-        TestClientAsync().GetAwaiter().GetResult();
+        //TestClientAsync().GetAwaiter().GetResult();
         //TestHostAsync().GetAwaiter().GetResult();
+        TestWorkspaceAsync().GetAwaiter().GetResult();
     }
 
     static async Task TestScriptInstrumentingAsync()
@@ -112,14 +113,26 @@ class Program
     }
 
 
-    private static void Host_OnAdornmentChange(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel)
+    static async Task TestWorkspaceAsync()
     {
-        throw new NotImplementedException();
-    }
+        var dir = Directory.GetCurrentDirectory();
+        for (; dir != null; dir = Path.GetDirectoryName(dir)) if (Directory.Exists(dir + "/SampleProjects")) break;
+        dir = Path.GetFullPath(dir + "/SampleProjects/HelloWorld");
+        if (!Directory.Exists(dir)) throw new DirectoryNotFoundException(dir);
 
-    private static void Host_OnDiagnosticChange(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel)
-    {
-        throw new NotImplementedException();
+        // Scrape md files
+        foreach (var file in Directory.GetFiles(dir, "*.md"))
+        {
+
+        }
+
+        // Scrape for #r references to nuget packages
+        foreach (var file in Directory.GetFiles(dir))
+        {
+            var ext = Path.GetExtension(file).ToLower();
+            if (ext != ".md" && ext != ".csx") continue;
+
+        }
     }
 
     static async Task TestClientAsync()
