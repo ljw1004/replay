@@ -43,6 +43,13 @@ public class Program
         return null;
     }
 
+    public static string GetShortDocumentName(Project project, string fn)
+    {
+        var dir = Path.GetFullPath(Path.GetDirectoryName(project.FilePath));
+        if (!fn.StartsWith(dir, StringComparison.CurrentCultureIgnoreCase)) throw new Exception("unrecognized document filename");
+        return fn.Substring(dir.Length + 1);
+    }
+
     public static async Task DoSocketAsync(HttpContext http, WebSocket socket)
     {
         Exception _ex = null;
@@ -74,38 +81,46 @@ public class Program
 
 
             // Set up monitoring for diagnostics
-            var queue = new BufferBlock<string>();
             var host = new ReplayHost(true);
-            host.AdornmentChanged += async (isAdd, tag, line, content, deferral, cancel) =>
+            ReplayHost.AdornmentChangedHandler lambdaAdornmentChanged = async (isAdd, tag, file, line, content, deferral, cancel) =>
             {
                 // ADORNMENT remove 7
                 // ADORNMENT ADD 7 231 Hello world
-                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}";
-                await socket.SendStringAsync(msg);
+                var fn = GetShortDocumentName(project, file);
+                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{fn}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{fn}";
+                if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
                 deferral.SetResult(null);
             };
-            host.DiagnosticChanged += async (isAdd, tag, diagnostic, deferral, cancel) =>
+            ReplayHost.DiagnosticChangedHandler lambdaDiagnosticChanged = async (isAdd, tag, diagnostic, deferral, cancel) =>
             {
-                // DIAGNOSTIC remove 7
-                // DIAGNOSTIC add 7 Hidden file.cs 70 24 CS8019: Unnecessary using directive.
-                var msg = isAdd ? $"DIAGNOSTIC\tadd\t{tag}\t{DiagnosticUserFacingComparer.ToString(diagnostic)}" : $"DIAGNOSTIC\tremove\t{tag}";
-                await socket.SendStringAsync(msg);
+                // DIAGNOSTIC remove 7 file.cs
+                // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive.
+                if (diagnostic.Severity == DiagnosticSeverity.Error || diagnostic.Severity == DiagnosticSeverity.Warning)
+                {
+                    var fn = DiagnosticUserFacingComparer.ToFileName(diagnostic);
+                    if (fn != null) fn = GetShortDocumentName(project, fn);
+                    var msg = isAdd ? $"DIAGNOSTIC\tadd\t{tag}\t{fn}\t{DiagnosticUserFacingComparer.ToString(diagnostic)}" : $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
+                    if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
+                }
                 deferral.TrySetResult(null);
             };
-            host.Erred += async (error, deferral, cancel) =>
+            ReplayHost.ReplayHostError lambdaErred = async (error, deferral, cancel) =>
             {
-                await socket.SendStringAsync($"ERROR\tCLIENT: {error}");
+                if (socket.State != WebSocketState.Closed) await socket.SendStringAsync($"ERROR\tCLIENT: {error}");
                 deferral.TrySetResult(null);
             };
+
+            host.AdornmentChanged += lambdaAdornmentChanged;
+            host.DiagnosticChanged += lambdaDiagnosticChanged;
+            host.Erred += lambdaErred;
+
             var dummy = host.ChangeDocumentAsync(project, null, -1, -1, -1);
 
             // Run the conversation!
             while (true)
             {
-                if (queue.TryReceive(out cmd)) { await socket.SendStringAsync(cmd); continue; }
-
                 cmd = await socket.RecvStringAsync();
-                if (cmd == null) return;
+                if (cmd == null) { host.AdornmentChanged -= lambdaAdornmentChanged; host.DiagnosticChanged -= lambdaDiagnosticChanged; host.Erred -= lambdaErred; return; }
                 var cmds = cmd.Split(new[] { '\t' });
 
                 if (cmds[0] == "GET")
@@ -146,18 +161,18 @@ public class Program
 
                 else if (cmds[0] == "WATCH")
                 {
-                    string file; int line, count; Document document;
-                    if (cmds.Length != 4
+                    string file; int line=-1, count=-1; Document document = null;
+                    if ((cmds.Length != 4 && cmds.Length != 2)
                         || (file = cmds[1]) == null
-                        || (document = GetDocumentByName(project, file)) == null
-                        || !int.TryParse(cmds[2], out line)
-                        || !int.TryParse(cmds[3], out count))
+                        || (file != "*" && (document = GetDocumentByName(project, file)) == null)
+                        || (cmds.Length == 4 && !int.TryParse(cmds[2], out line))
+                        || (cmds.Length == 4 && !int.TryParse(cmds[3], out count)))
                     {
                         await socket.SendStringAsync($"ERROR\tExpected 'WATCH file line count', got '{cmd}'");
                         continue;
                     }
                     //
-                    dummy = host.WatchAsync(document.FilePath, line, count);
+                    dummy = host.WatchAsync(file == "*" ? file : document.FilePath, line, count);
                 }
 
                 else

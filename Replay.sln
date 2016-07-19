@@ -22,10 +22,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApplication1", "SampleProjects\ConsoleApplication1\ConsoleApplication1.csproj", "{0F7D4533-F16A-4E66-BA3F-39A3465354C2}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "HelloWorld", "HelloWorld", "{65AE468E-8308-477C-AE33-B945355D56F3}"
-	ProjectSection(SolutionItems) = preProject
-		SampleProjects\HelloWorld\main.md = SampleProjects\HelloWorld\main.md
-	EndProjectSection
+Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "HelloWorld", "SampleProjects\HelloWorld\HelloWorld.xproj", "{BAA8DE42-C52E-404B-B023-62AABB095109}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -57,6 +54,10 @@ Global
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BAA8DE42-C52E-404B-B023-62AABB095109}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BAA8DE42-C52E-404B-B023-62AABB095109}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -64,6 +65,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{7C7A9D98-AFAA-4853-8407-56D64D6B5356} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
-		{65AE468E-8308-477C-AE33-B945355D56F3} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
+		{BAA8DE42-C52E-404B-B023-62AABB095109} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 	EndGlobalSection
 EndGlobal

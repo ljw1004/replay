@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -44,6 +45,10 @@ namespace System.Runtime.CompilerServices
             {
                 File = file; Line = line; Content = content; ContentHash = content?.GetStableHashCode() ?? 0;
             }
+            public LineItem WithContent(string content)
+            {
+                return new LineItem(File, Line, content);
+            }
         }
 
         static Replay()
@@ -80,7 +85,7 @@ namespace System.Runtime.CompilerServices
             var Database = new Dictionary<string, Dictionary<int, LineItem>>();
             string watchFile = null;
             int watchLine = -1, watchCount = -1;
-            var watchHashes = new Dictionary<int, int>();
+            var watchHashes = new Dictionary<string, Dictionary<int, int>>();
 
             while (true)
             {
@@ -119,37 +124,49 @@ namespace System.Runtime.CompilerServices
 
                     else if (cmds[0] == "WATCH")
                     {
-                        string file, correlation; int line, count, nhashes;
-                        if (cmds.Length < 6
+                        string file, correlation; int line=-1, count=-1;
+                        if ((cmds.Length != 3 && cmds.Length < 5)
                             || (correlation = cmds[1]) == null
                             || (file = cmds[2]) == null
-                            || !int.TryParse(cmds[3], out line)
-                            || !int.TryParse(cmds[4], out count)
-                            || !int.TryParse(cmds[5], out nhashes)
-                            || cmds.Length != nhashes*2 + 6)
+                            || (cmds.Length>3 && !int.TryParse(cmds[3], out line))
+                            || (cmds.Length>3 && !int.TryParse(cmds[4], out count)))
                         {
-                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH correlation file line count nhashes ...', got '{cmd}'"); continue;
+                            SystemOut.WriteLine($"ERROR\tExpected 'WATCH correlation file line count <hashes>', got '{cmd}'"); continue;
                         }
 
+                        // Parse the watch command
                         watchFile = file; watchLine = line; watchCount = count;
-
-                        for (int i=0; i<nhashes*2; i+=2)
+                        string hashFile = null;
+                        for (int i=5; i<cmds.Length-1;)
                         {
-                            int hash;
-                            if (!int.TryParse(cmds[6+i], out line) || !int.TryParse(cmds[7+i], out hash)) { SystemOut.WriteLine($"ERROR\twrong hash #{i} in '{cmd}'"); continue; }
-                            watchHashes[line] = hash;
+                            int hline, hhash;
+                            if (int.TryParse(cmds[i], out hline) && int.TryParse(cmds[i+1], out hhash))
+                            {
+                                watchHashes[hashFile][hline] = hhash;
+                                i += 2;
+                            }
+                            else
+                            {
+                                hashFile = cmds[i];
+                                if (!watchHashes.ContainsKey(hashFile)) watchHashes[hashFile] = new Dictionary<int, int>();
+                                i += 1;
+                            }
                         }
 
-                        if (watchFile != null && Database.ContainsKey(watchFile))
+                        // Send out a dump, if needed
+                        foreach (var dbkv in Database)
                         {
-                            var dbfile = Database[watchFile];
-                            foreach (var kv in dbfile)
+                            if (watchFile != "*" && watchFile != dbkv.Key) continue;
+                            if (!watchHashes.ContainsKey(dbkv.Key)) watchHashes[dbkv.Key] = new Dictionary<int, int>();
+                            var watchFileHashes = watchHashes[dbkv.Key];
+                            foreach (var kv in dbkv.Value)
                             {
                                 var li = kv.Value; int hash;
-                                if (li.Line < watchLine || li.Line >= watchLine + watchCount) continue;
-                                if (watchHashes.TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
-                                SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
-                                watchHashes[li.Line] = li.ContentHash;
+                                if (watchLine == -1 && watchCount == -1) { }
+                                else if (li.Line < watchLine || li.Line >= watchLine + watchCount) continue;
+                                if (watchFileHashes.TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
+                                SystemOut.WriteLine($"REPLAY\tadd\t{li.File}\t{li.Line}\t{li.ContentHash}\t{li.Content}");
+                                watchFileHashes[li.Line] = li.ContentHash;
                             }
                         }
                         if (correlation != "") SystemOut.WriteLine($"END\twatch\t{correlation}");
@@ -170,37 +187,43 @@ namespace System.Runtime.CompilerServices
 
                     if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
                     var dbfile = Database[li.File];
+                    LineItem oldli; if (dbfile.TryGetValue(li.Line, out oldli))
+                    {
+                        var c = oldli.Content + " " + li.Content;
+                        if (c.Length > 54)
+                        {
+                            c = "... " + c.Substring(c.Length - 54).Replace("\\r", "").Replace("\\n", "");
+                            if (c.StartsWith("... ... ")) c = c.Substring(4);
+                        }
+                        li = li.WithContent(c);
+                    }
                     dbfile[li.Line] = li;
 
-                    if (watchFile == li.File && watchLine <= li.Line && li.Line < watchLine + watchCount)
-                    {
-                        int hash; if (!watchHashes.TryGetValue(li.Line, out hash) || hash != li.ContentHash)
-                        {
-                            var s = li.Content;
-                            SystemOut.WriteLine($"REPLAY\tadd\t{li.Line}\t{li.ContentHash}\t{li.Content}");
-                            watchHashes[li.Line] = li.ContentHash;
-                        }
-                    }
+                    if (watchFile != "*" && watchFile != li.File) continue;
+                    if (watchLine == -1 && watchCount == -1) { }
+                    else if (watchLine <= li.Line && li.Line < watchLine + watchCount) { }
+                    else continue;
+                    if (!watchHashes.ContainsKey(li.File)) watchHashes[li.File] = new Dictionary<int, int>();
+                    int hash; if (watchHashes[li.File].TryGetValue(li.Line, out hash) && hash == li.ContentHash) continue;
+
+                    var s = li.Content;
+                    SystemOut.WriteLine($"REPLAY\tadd\t{li.File}\t{li.Line}\t{li.ContentHash}\t{li.Content}");
+                    watchHashes[li.File][li.Line] = li.ContentHash;
                     continue;
                 }
 
                 if (endTask?.IsCompleted == true)
                 {
                     endTask = new TaskCompletionSource<object>().Task; // hacky way prevent it ever firing again
-                    if (watchFile != null && Database.ContainsKey(watchFile))
+                    foreach (var dbkv in Database)
                     {
-                        var dbfile = Database[watchFile];
-                        for (int line = watchLine; line < watchLine + watchCount; line++)
-                        {
-                            LineItem li;
-                            bool hasLi = dbfile.TryGetValue(line, out li);
-                            int hash; bool hasWatch = watchHashes.TryGetValue(line, out hash);
-                            if (hasLi && hasWatch && hash == li.ContentHash) { }
-                            else if (hasLi && hasWatch && hash != li.ContentHash) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{watchFile}:({line})' to have hash {li.ContentHash} but watcher has hash {hash}");
-                            else if (hasLi && !hasWatch) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{watchFile}:({line})' to have hash {li.ContentHash} but watcher has nothing");
-                            else if (!hasLi && hasWatch) SystemOut.WriteLine($"REPLAY\tremove\t{line}");
-                            else if (!hasLi && !hasWatch) { }
-                        }
+                        if (watchFile != "*" && !Database.ContainsKey(dbkv.Key)) continue;
+                        if (!watchHashes.ContainsKey(dbkv.Key)) watchHashes[dbkv.Key] = new Dictionary<int, int>();
+                        var dbLines = new HashSet<int>(dbkv.Value.Keys);
+                        var watchLines = new HashSet<int>(watchHashes[dbkv.Key].Keys);
+                        foreach (var line in dbLines.Except(watchLines)) SystemOut.WriteLine($"ERROR\tUpon exit, expected '{dbkv.Key}:({line})' to have adornment, but watcher has nothing");
+                        foreach (var line in watchLines.Except(dbLines)) SystemOut.WriteLine($"REPLAY\tremove\t{dbkv.Key}\t{line}");
+                        foreach (var line in dbLines.Intersect(watchLines).Where(i => dbkv.Value[i].ContentHash != watchHashes[dbkv.Key][i])) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{dbkv.Key}:({line})' to have hash {dbkv.Value[line].ContentHash} but watcher has hash {watchHashes[dbkv.Key][line]}");
                     }
                     SystemOut.WriteLine($"END\trun");
                 }

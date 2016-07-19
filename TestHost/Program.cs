@@ -81,9 +81,9 @@ class Program
             }
             deferral.SetResult(null);
         };
-        host.AdornmentChanged += (isAdd, tag, line, content, deferral, cancel) =>
+        host.AdornmentChanged += (isAdd, tag, file, line, content, deferral, cancel) =>
         {
-            if (isAdd) Console.WriteLine($"+A{tag}: ({line}) {content}");
+            if (isAdd) Console.WriteLine($"+A{tag}: {Path.GetFileName(file)}({line}) {content}");
             else Console.WriteLine($"-A{tag}");
             deferral.SetResult(null);
         };
@@ -115,24 +115,27 @@ class Program
 
     static async Task TestWorkspaceAsync()
     {
+        await Task.Delay(0);
         var dir = Directory.GetCurrentDirectory();
         for (; dir != null; dir = Path.GetDirectoryName(dir)) if (Directory.Exists(dir + "/SampleProjects")) break;
         dir = Path.GetFullPath(dir + "/SampleProjects/HelloWorld");
         if (!Directory.Exists(dir)) throw new DirectoryNotFoundException(dir);
 
-        // Scrape md files
-        foreach (var file in Directory.GetFiles(dir, "*.md"))
-        {
+        // 1. Scrape all #r
+        // 2. See if project.json needs update; if so "dotnet restore"
+        // 3. See if project.csc-rsp needs update; if so "dotnet build"
+        // 4. Load the project
+        // 5. Add all .cs and .csx files
+        // 6. For each .md, add a synthesized .csx file that includes all the bits
+        // Editor needs to know offset of each editor chunk, so can send updates to the MD
+        // Host needs to know offset, so it can update each individual csx
 
-        }
+        // -- OR --
 
-        // Scrape for #r references to nuget packages
-        foreach (var file in Directory.GetFiles(dir))
-        {
-            var ext = Path.GetExtension(file).ToLower();
-            if (ext != ".md" && ext != ".csx") continue;
+        // 6. For each md, add a synthesized "file.md/partN.csx"
+        // Editor speaks to these files
+        // Host will update the individual files, plus have a way of updating the .md when it's time to save
 
-        }
     }
 
     static async Task TestClientAsync()

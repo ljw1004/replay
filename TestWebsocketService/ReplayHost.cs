@@ -91,12 +91,12 @@ using System.Threading.Tasks.Dataflow;
 class ReplayHost : IDisposable
 {
     private bool EditorHasOwnDatabase;
-    private BufferBlock<Tuple<string, Project, TaskCompletionSource<object>>> Queue = new BufferBlock<Tuple<string, Project, TaskCompletionSource<object>>>();
+    private BufferBlock<Command> Queue = new BufferBlock<Command>();
     private int TagCounter;
     private Task RunTask;
     private CancellationTokenSource RunCancel = new CancellationTokenSource();
 
-    public delegate void AdornmentChangedHandler(bool isAdd, int tag, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel);
+    public delegate void AdornmentChangedHandler(bool isAdd, int tag, string file, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral, CancellationToken cancel);
     public event AdornmentChangedHandler AdornmentChanged;
@@ -132,23 +132,44 @@ class ReplayHost : IDisposable
     {
         if (project == null) throw new ArgumentNullException(nameof(project));
         var tcs = new TaskCompletionSource<object>();
-        Queue.Post(Tuple.Create($"CHANGE\t{file}\t{line}\t{count}\t{newcount}", project, tcs));
+        var cmd = new ChangeDocumentCommand { Project = project, File = file, Line = line, Count = count, NewCount = newcount, Tcs=tcs };
+        Queue.Post(cmd);
         return tcs.Task;
     }
     public Task WatchAsync(string file, int line, int count)
     {
         if (file == null) throw new ArgumentNullException(nameof(file));
         var tcs = new TaskCompletionSource<object>();
-        Queue.Post(Tuple.Create($"WATCH\t{file}\t{line}\t{count}", (Project)null, tcs));
+        var cmd = new WatchCommand { File = file, Line = line, Count = count, Tcs = tcs };
+        Queue.Post(cmd);
         return tcs.Task;
     }
 
-    private Task SendAdornmentChangeAsync(bool isAdd, int tag, int line, string content, CancellationToken cancel)
+    abstract class Command
+    {
+        public TaskCompletionSource<object> Tcs;
+    }
+    class ChangeDocumentCommand : Command
+    {
+        public Project Project;
+        public string File;
+        public int Line;
+        public int Count;
+        public int NewCount;
+    }
+    class WatchCommand : Command
+    {
+        public string File;
+        public int Line;
+        public int Count;
+    }
+
+    private Task SendAdornmentChangeAsync(bool isAdd, int tag, string file, int line, string content, CancellationToken cancel)
     {
         var c = AdornmentChanged;
         if (c == null) return Task.FromResult(0);
         var tcs = new TaskCompletionSource<object>();
-        c.Invoke(isAdd, tag, line, content, tcs, cancel);
+        c.Invoke(isAdd, tag, file, line, content, tcs, cancel);
         return tcs.Task;
     }
 
@@ -256,16 +277,15 @@ class ReplayHost : IDisposable
                     continue;
                 }
 
-                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("CHANGE\t"))
+                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result is ChangeDocumentCommand)
                 {
-                    var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
-                    var cmdproject = cmd.Item2;
-                    runProcessTcs?.TrySetResult(null); runProcessTcs = cmd.Item3;
+                    var cmd = queueTask.Result as ChangeDocumentCommand; queueTask = Queue.ReceiveAsync();
+                    var cmdproject = cmd.Project;
+                    runProcessTcs?.TrySetResult(null); runProcessTcs = cmd.Tcs;
                     foreach (var tcs in watchTcs) tcs.Item2.TrySetCanceled();
                     watchTcs.Clear();
-                    var cmds = cmd.Item1.Split(new[] { '\t' });
-                    string file = cmds[1];
-                    int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]), newcount = int.Parse(cmds[4]);
+                    string file = cmd.File;
+                    int line = cmd.Line, count = cmd.Count, newcount = cmd.NewCount;
 
                     // Modify entries in the database: delete all line <= entry < line+count; add (newcount-count) to all line+count <= entry
                     if (file != null && Database2.ContainsKey(file))
@@ -288,31 +308,45 @@ class ReplayHost : IDisposable
                     continue;
                 }
 
-                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result.Item1.StartsWith("WATCH\t"))
+                if (queueTask?.Status == TaskStatus.RanToCompletion && queueTask.Result is WatchCommand)
                 {
-                    var cmd = queueTask.Result; queueTask = Queue.ReceiveAsync();
-                    var cmds = cmd.Item1.Split(new[] { '\t' });
-                    string file = cmds[1];
-                    int line = int.Parse(cmds[2]), count = int.Parse(cmds[3]);
-                    var tcs = cmd.Item3;
+                    var cmd = queueTask.Result as WatchCommand; queueTask = Queue.ReceiveAsync();
+                    string file = cmd.File;
+                    int line = cmd.Line, count = cmd.Count;
+                    var tcs = cmd.Tcs;
                     //
-                    var hashes = (file != null && Database2.ContainsKey(file))
-                                 ? Database2[file].Values.Where((ta) => line <= ta.Line && ta.Line < line + count).ToList()
-                                 : new List<TaggedAdornment>();
+                    var hashes = new Dictionary<string,List<TaggedAdornment>>();
+                    foreach (var dbkv in Database2)
+                    {
+                        if (file != "*" && file != dbkv.Key) continue;
+                        hashes[dbkv.Key] = new List<TaggedAdornment>();
+                        foreach (var kv in dbkv.Value)
+                        {
+                            var ta = kv.Value;
+                            if (line == -1 && count == -1) { }
+                            else if (line <= ta.Line && ta.Line < line + count) { }
+                            else continue;
+                            hashes[dbkv.Key].Add(ta);
+                        }
+                    }
                     if (!EditorHasOwnDatabase)
                     {
-                        foreach (var ta in hashes) await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                        foreach (var dbkv in hashes) foreach (var ta in dbkv.Value) await SendAdornmentChangeAsync(true, ta.Tag, ta.File, ta.Line, ta.Content, cancel).ConfigureAwait(false);
                     }
                     //
                     if (watchFile == file && watchLine == line && watchCount == count) { tcs.TrySetResult(null); continue; }
                     watchFile = file; watchLine = line; watchCount = count;
                     if (getProcessTask?.Status != TaskStatus.RanToCompletion || getProcessTask.Result == null) { tcs.TrySetResult(null); continue; }
 
-                    // WATCH correlation file line count nhashes line0 hash0 ... lineN hashN
+                    // WATCH correlation file line count hashes...
                     var correlation = ++TagCounter;
                     watchTcs.AddLast(Tuple.Create(correlation.ToString(), tcs));
                     var process = getProcessTask.Result;
-                    var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
+                    var msg = "";
+                    foreach (var dbkv in hashes)
+                    {
+                        msg += dbkv.Key + "\t" + string.Join("\t", dbkv.Value.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
+                    }
                     msg = $"WATCH\t{correlation}\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}".TrimEnd(new[] { '\t' });
                     await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
                     continue;
@@ -320,7 +354,7 @@ class ReplayHost : IDisposable
 
                 if (queueTask?.IsCompleted == true)
                 {
-                    string msg; try { msg = queueTask.GetAwaiter().GetResult().Item1; } catch (Exception ex) { msg = ex.Message; }
+                    string msg; try { msg = queueTask.GetAwaiter().GetResult().ToString(); } catch (Exception ex) { msg = ex.Message; }
                     queueTask = Queue.ReceiveAsync();
                     await SendErrorAsync($"ERROR\tHost expected CHANGE|WATCH, got '{msg}'", cancel).ConfigureAwait(false);
                     continue;
@@ -330,23 +364,23 @@ class ReplayHost : IDisposable
                 {
                     var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
                     var cmds = cmd.Split(new[] { '\t' });
-                    // REPLAY add line hash content
-                    // REPLAY remove line
-                    int line = -1, hash = -1; string content = null;
+                    // REPLAY add file line hash content
+                    // REPLAY remove file line
+                    int line = -1, hash = -1; string file = null, content = null;
                     bool ok = false;
-                    if (cmds.Length == 5 && cmds[1] == "add" && int.TryParse(cmds[2], out line) && int.TryParse(cmds[3], out hash) && (content = cmds[4]) != null) ok = true;
-                    if (cmds.Length == 3 && cmds[1] == "remove" && int.TryParse(cmds[2], out line)) ok = true;
-                    if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add line hash content | REPLAY remove line', got '{cmd}'", cancel); continue; }
+                    if (cmds.Length == 6 && cmds[1] == "add" && (file = cmds[2]) != null && int.TryParse(cmds[3], out line) && int.TryParse(cmds[4], out hash) && (content = cmds[5]) != null) ok = true;
+                    if (cmds.Length == 4 && cmds[1] == "remove" && (file = cmds[2]) != null && int.TryParse(cmds[2], out line)) ok = true;
+                    if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add file line hash content | REPLAY remove file line', got '{cmd}'", cancel); continue; }
                     //
                     if (cmds[1] == "remove")
                     {
-                        Dictionary<int, TaggedAdornment> dbfile; ok = Database2.TryGetValue(watchFile, out dbfile);
+                        Dictionary<int, TaggedAdornment> dbfile; ok = Database2.TryGetValue(file, out dbfile);
                         if (ok)
                         {
                             TaggedAdornment ta; ok = dbfile.TryGetValue(line, out ta);
                             if (ok)
                             {
-                                await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
+                                await SendAdornmentChangeAsync(false, ta.Tag, ta.File, -1, null, cancel).ConfigureAwait(false);
                                 dbfile.Remove(line);
                                 ok = (hash == ta.ContentHash);
                             }
@@ -356,14 +390,14 @@ class ReplayHost : IDisposable
                     else if (cmds[1] == "add")
                     {
                         if (watchFile == null) { await SendErrorAsync($"ERROR\tHost received 'REPLAY add' but isn't watching any files", cancel).ConfigureAwait(false); continue; }
-                        if (!Database2.ContainsKey(watchFile)) Database2[watchFile] = new Dictionary<int, TaggedAdornment>();
-                        var dbfile = Database2[watchFile];
+                        if (!Database2.ContainsKey(file)) Database2[file] = new Dictionary<int, TaggedAdornment>();
+                        var dbfile = Database2[file];
                         TaggedAdornment ta; if (dbfile.TryGetValue(line, out ta))
                         {
-                            await SendAdornmentChangeAsync(false, ta.Tag, -1, null, cancel).ConfigureAwait(false);
+                            await SendAdornmentChangeAsync(false, ta.Tag, ta.File, -1, null, cancel).ConfigureAwait(false);
                         }
-                        ta = new TaggedAdornment(watchFile, line, content, hash, ++TagCounter);
-                        await SendAdornmentChangeAsync(true, ta.Tag, ta.Line, ta.Content, cancel).ConfigureAwait(false);
+                        ta = new TaggedAdornment(file, line, content, hash, ++TagCounter);
+                        await SendAdornmentChangeAsync(true, ta.Tag, ta.File, ta.Line, ta.Content, cancel).ConfigureAwait(false);
                         dbfile[line] = ta;
                     }
                     continue;
@@ -422,23 +456,23 @@ class ReplayHost : IDisposable
         {
             runProcessTcs?.TrySetCanceled();
             foreach (var tcs in watchTcs) tcs.Item2.TrySetCanceled();
-            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
-            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetCanceled();
+            IList<Command> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Tcs?.TrySetCanceled();
         }
         catch (Exception ex)
         {
             runProcessTcs?.TrySetException(ex);
             foreach (var tcs in watchTcs) tcs.Item2.TrySetException(ex);
-            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
-            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetException(ex);
+            IList<Command> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Tcs?.TrySetException(ex);
             throw;
         }
         finally
         {
             runProcessTcs?.TrySetResult(null);
             foreach (var tcs in watchTcs) tcs.Item2.TrySetResult(null);
-            IList<Tuple<string, Project, TaskCompletionSource<object>>> items;
-            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Item3?.TrySetResult(null);
+            IList<Command> items;
+            if (Queue.TryReceiveAll(out items)) foreach (var item in items) item.Tcs?.TrySetResult(null);
         }
     }
 
@@ -668,10 +702,19 @@ class DiagnosticUserFacingComparer : IEqualityComparer<Diagnostic>
         int offset = -1, length = -1;
         if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
         var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
-        return $"{diagnostic.Severity}\t{file}\t{offset}\t{length}\t{dmsg}";
+        return $"{diagnostic.Severity}\t{offset}\t{length}\t{dmsg}";
     }
-    public bool Equals(Diagnostic x, Diagnostic y) => ToString(x) == ToString(y);
-    public int GetHashCode(Diagnostic x) => ToString(x).GetHashCode();
+    public static string ToFileName(Diagnostic diagnostic)
+    {
+        if (diagnostic.Location.IsInSource) return diagnostic.Location.SourceTree.FilePath;
+        return "";
+    }
+    public static string ToFullString(Diagnostic diagnostic)
+    {
+        return ToFileName(diagnostic) + "\t" + ToString(diagnostic);
+    }
+    public bool Equals(Diagnostic x, Diagnostic y) => ToFullString(x) == ToFullString(y);
+    public int GetHashCode(Diagnostic x) => ToFullString(x).GetHashCode();
 }
 
 

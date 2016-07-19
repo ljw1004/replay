@@ -24,59 +24,84 @@ class Channel<T>
     }
 }
 
-var editor : monaco.editor.IStandaloneCodeEditor;
+interface IEditor {container:HTMLElement, editor:monaco.editor.IStandaloneCodeEditor; file:string};
+var editors : IEditor[] = [];
 var stdin = new Channel<string>();
 var connection : WebSocket;
 var ignoreModelDidChangeContent : boolean = false;
 var adornments: { [file:string]: { [tag:string]: monaco.editor.IContentWidget } } = { };
+var diagnosticTagToZoneId : number[] = [];
 
 
 require.config({ paths: { 'vs': 'node_modules/monaco-editor/dev/vs'}});
 require(['vs/editor/editor.main'], function() {
-    editor = monaco.editor.create(document.getElementById('container'), {
+   var containers : HTMLElement[] = [].slice.call(document.getElementsByClassName("container"));
+
+   var project = containers[0].getAttribute("project");
+   connection = new WebSocket(`ws://localhost:60828/${project}`);
+   connection.onopen = function() {};
+   connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
+   connection.onerror = function(ev:Event) {stdin.post(null); }
+   connection.onclose = function() { stdin.post(null); }
+
+   containers.forEach(container => {
+     var file = container.getAttribute("file");
+     var editor = monaco.editor.create(container, {
         language:"csharp",
         roundedSelection:true,
         theme:"vs-dark",
     	scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}
-    });
-    connection = new WebSocket('ws://localhost:60828/ConsoleApp1');
-    connection.onopen = function() {};
-    connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
-    connection.onerror = function(ev:Event) {stdin.post(null); }
-    connection.onclose = function() { stdin.post(null); }
-    editor.getModel().onDidChangeContent(modelDidChangeContent);
-    window.onresize = function() { editor.layout(); }
-    layout();
-    startDialog();
+     });
+     
+     var ed : IEditor = {container:container, editor:editor, file:file};
+     editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,ed));
+     layout(ed);
+     editors.push(ed);
+   });
+
+   window.onresize = () =>
+   {
+       for (var item of editors) item.editor.layout();
+   };
+   startDialog();
 });
 
-
-function layout():void
+function findEditor(file:string):IEditor
 {
-    var nlines = editor.getModel().getLineCount()+1;
-    var lineheight = editor.getTopForLineNumber(2);
-    document.getElementById("container").style.height = '' + (nlines*lineheight)+'px';
-    editor.layout();
+    for (var item of editors)
+    {
+        if (item.file === file) return item;
+    }
+    return {editor:null, container: null, file:null};
 }
 
-function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2):void
+
+function layout(ed:IEditor):void
+{
+    var nlines = ed.editor.getModel().getLineCount()+1;
+    var lineheight = ed.editor.getTopForLineNumber(2);
+    if (lineheight == 0) lineheight = 19;
+    ed.container.style.height = '' + (nlines*lineheight)+'px';
+    ed.editor.layout();
+}
+
+function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2, ed:IEditor):void
 {
     if (ignoreModelDidChangeContent) return;
 
-    layout();
+    layout(ed);
     var pos = new monaco.Position(e.range.startLineNumber, e.range.startColumn);
-    var offset = editor.getModel().getOffsetAt(pos);
+    var offset = ed.editor.getModel().getOffsetAt(pos);
     var s = e.text.replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n");
-    connection.send(`CHANGE\tMain.csx\t${offset}\t${e.rangeLength}\t${s}`);
+    connection.send(`CHANGE\t${ed.file}\t${offset}\t${e.rangeLength}\t${s}`);
     //
-    var file = "Main.csx";
     var line = e.range.startLineNumber;
     var count = e.range.endLineNumber - e.range.startLineNumber + 1;
-    var newEndPos = editor.getModel().getPositionAt(offset + e.text.length);
+    var newEndPos = ed.editor.getModel().getPositionAt(offset + e.text.length);
     var newCount = newEndPos.lineNumber - e.range.startLineNumber + 1;
     //
-    if (!(file in adornments)) adornments[file] = {}
-    var db0 = adornments[file];
+    if (!(ed.file in adornments)) adornments[ed.file] = {}
+    var db0 = adornments[ed.file];
     var db : { [tag:string] : monaco.editor.IContentWidget } = {}
     Object.keys(db0).forEach(tag =>
     {
@@ -86,7 +111,7 @@ function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2):void
         if (wline < line) db[tag] = widget;
         else if (line <= wline && wline < line + count)
         {
-            editor.removeContentWidget(widget);
+            ed.editor.removeContentWidget(widget);
         }
         else
         {
@@ -95,10 +120,10 @@ function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2):void
             var wtag2 = tag;
             var widget2 : monaco.editor.IContentWidget = {getId:()=>wtag2, getDomNode:()=>wnode2, getPosition:()=>wpos2};
             db[wtag2] = widget2;
-            editor.layoutContentWidget(widget2);
+            ed.editor.layoutContentWidget(widget2);
         }
     });
-    adornments[file] = db;
+    adornments[ed.file] = db;
 }
 
 function dumpAdornments():void
@@ -119,87 +144,86 @@ function dumpAdornments():void
 
 async function startDialog():Promise<void>
 {
-    var diagnosticIdToZoneId : number[] = [];
 
     var ok = await stdin.recv();
     if (ok != "OK") {log(`error: expected 'OK', got '${ok}'`); return;}
     connection.send("OK");
-    connection.send("GET\tMain.csx");
-    connection.send("WATCH\tMain.csx\t0\t50");
+    for (var tt of editors) connection.send(`GET\t${tt.file}`);
+    connection.send("WATCH\t*");
     while (true)
     {
         var cmd = await stdin.recv();
         var cmds = cmd.split('\t');
-
-        if (cmds[0] === "GOT")
-        {
-            var fn = cmds[1];
-            var txt = cmds[2]; 
-            txt = txt.replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
-            ignoreModelDidChangeContent = true;
-            editor.getModel().setValue(txt);
-            ignoreModelDidChangeContent = false;
-            layout();
-        }
-
-        else if (cmds[0] === "DIAGNOSTIC")
-        {
-            // "DIAGNOSTIC add 7 Hidden file.cs 70 24 CS8019: Unnecessary using directive.
-            var diagnosticId : number = Number(cmds[2]);
-            if (cmds[1] == "remove" && diagnosticId in diagnosticIdToZoneId)
-            {
-                var zoneId : number = diagnosticIdToZoneId[diagnosticId];
-                editor.changeViewZones( (accessor) => accessor.removeZone(zoneId));
-            }
-            else if (cmds[1] === "add" && (cmds[3] === "Error" || cmds[3] === "Warning")
-                && (cmds[4].endsWith("Main.csx") || cmds[4] == ""))
-            {
-                var offset : number = cmds[5] == "" ? -1 : Number(cmds[5]);
-                var length : number = cmds[6] == "" ? -1 : Number(cmds[6]);
-                var domNode = document.createElement('div');
-                domNode.style.background = cmds[3] === "Error" ? "darkred" : "darkgreen";
-                domNode.style.fontSize = "small";
-                domNode.innerText = cmds[7];
-                var zone : monaco.editor.IViewZone = {afterLineNumber:0, heightInLines:2, domNode:domNode};
-                if (offset !== -1 && length !== -1)
-                {
-                    var startPos = editor.getModel().getPositionAt(offset);
-                    var endPos = editor.getModel().getPositionAt(offset + (length == 0 ? length : length - 1));
-                    zone.afterLineNumber = endPos.lineNumber;
-                }
-                editor.changeViewZones( (accessor) => diagnosticIdToZoneId[diagnosticId] = accessor.addZone(zone));
-            }
-        }
-
-        else if (cmds[0] === "ADORNMENT")
-        {
-            // "ADORNMENT add 12 9 t=2"
-            // "ADORNMENT remove 12"
-            var file = "Main.csx";
-            if (!(file in adornments)) adornments[file] = {}
-            if (cmds[1] === "add") AdornmentAdd(adornments[file], cmds[2], Number(cmds[3]), cmds[4]);
-            else AdornmentRemove(adornments[file], cmds[2]);
-        }
-
-        else
-        {
-            log(cmd);
-        }
+        // GOT file text
+        if (cmds[0] === "GOT") got(cmds[1], cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\"));
+        // DIAGNOSTIC remove 7 file.cs
+        else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "remove") diagnosticRemove(cmds[3], Number(cmds[2]));
+        // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive
+        else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "add") diagnosticAdd(cmds[3], Number(cmds[2]), cmds[4], cmds[5] === "" ? -1 : Number(cmds[5]), cmds[6] === "" ? -1 : Number(cmds[6]), cmds[7]);
+        // ADORNMENT remove 12 Main.csx
+        else if (cmds[0] === "ADORNMENT" && cmds[1] === "remove") adornmentRemove(cmds[3], cmds[2]);
+        // ADORNMENT add 12 Main.csx 9 t=2
+        else if (cmds[0] === "ADORNMENT" && cmds[1] === "add") adornmentAdd(cmds[3], cmds[2], Number(cmds[4]), cmds[5]);
+        else log(cmd);
     }
 }
 
-function AdornmentAdd(db:{ [tag:string]:monaco.editor.IContentWidget}, tag:string, line:number, content:string):void
+function got(file:string, txt:string):void
 {
-    var pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:line+1, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
-    var node = document.createElement("div");
-    node.innerHTML = '<span style="background:#333833; font-size:small; position:absolute; left:30em; width:10em;">// '+content+'</span>';
-    var widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
-    editor.addContentWidget(widget);
-    db[tag] = widget;                 
+    var ed = findEditor(file);
+    if (ed.editor === null) return;
+    ignoreModelDidChangeContent = true;
+    ed.editor.getModel().setValue(txt);
+    ignoreModelDidChangeContent = false;
+    layout(ed);
 }
 
-function AdornmentRemove(db:{ [tag:string]:monaco.editor.IContentWidget}, tag:string)
+function diagnosticRemove(file:string, tag: number)
 {
+    var zoneId = diagnosticTagToZoneId[tag];
+    var editor = findEditor(file).editor;
+	editor.changeViewZones( (accessor) => accessor.removeZone(zoneId));
+}
+
+function diagnosticAdd(file:string, tag:number, severity:string, offset:number, length:number, content:string):void
+{
+    if (severity !== "Error" && severity !== "Warning") return;
+    var editor = findEditor(file).editor;
+    if (editor === null) return;
+    var domNode = document.createElement('div');
+    domNode.style.background = (severity === "Error" ? "darkred" : "darkgreen");
+    domNode.style.fontSize = "small";
+    domNode.innerText = content;
+    var zone : monaco.editor.IViewZone = {afterLineNumber:0, heightInLines:2, domNode:domNode};
+    if (offset !== -1 && length !== -1)
+    {
+        var startPos = editor.getModel().getPositionAt(offset);
+        var endPos = editor.getModel().getPositionAt(offset + (length == 0 ? length : length - 1));
+        zone.afterLineNumber = endPos.lineNumber;
+    }
+    editor.changeViewZones( (accessor) => diagnosticTagToZoneId[tag] = accessor.addZone(zone));
+    
+}
+
+
+function adornmentAdd(file:string, tag:string, line:number, content:string):void
+{
+    var editor = findEditor(file).editor;
+    if (editor === null) return;
+    if (!(file in adornments)) adornments[file] = {};
+    var pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:line+1, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
+    var node = document.createElement("div");
+    node.innerHTML = '<span style="background:#333833; font-size:small; position:absolute; left:30em; width:20em; overflow:hidden;">// '+content+'</span>';
+    var widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
+    editor.addContentWidget(widget);
+    adornments[file][tag] = widget;                 
+}
+
+function adornmentRemove(file:string, tag:string)
+{
+    var editor = findEditor(file).editor;
+    if (editor === null) return;
+    var db = adornments[file];
     editor.removeContentWidget(db[tag]);
     delete db[tag];
 }
