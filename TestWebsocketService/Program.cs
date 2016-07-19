@@ -141,7 +141,7 @@ public class Program
                     var line = treeBefore.GetLineSpan(change.Span).StartLinePosition.Line;
                     var count = treeBefore.GetLineSpan(change.Span).EndLinePosition.Line - line + 1;
                     var newcount = treeAfter.GetLineSpan(new TextSpan(position, content.Length)).EndLinePosition.Line - line + 1;
-                    dummy = host.ChangeDocumentAsync(project, file, line, count, newcount);
+                    dummy = host.ChangeDocumentAsync(project, document.FilePath, line, count, newcount);
                 }
 
                 else if (cmds[0] == "WATCH")

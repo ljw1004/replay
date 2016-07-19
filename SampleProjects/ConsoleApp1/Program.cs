@@ -15,9 +15,8 @@ static class Program
 
 public class Helpers
 {
-    public static int f(int count)
+    public static void PrintLots(int count)
     {
         for (int i = 0; i < count; i++) Console.WriteLine(count);
-        return count;
     }
 }
