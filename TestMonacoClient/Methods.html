@@ -1,0 +1,59 @@
+<html>
+<head>
+<style>
+html, body {width: 100vw; height:100vh;margin:0;padding:0; background-color:black; color:white;
+font-family:Segoe UI}
+a {color: cyan; text-decoration: underline;}
+a:visited {color: cyan; text-decoration: underline;}
+#menu {position:fixed; top:0; left:0; width:7em; height:calc(100vh - 10ex); padding:0; background-color:#222222;}
+#menu p {padding-left:1.5em; padding-top:0.3ex; padding-bottom:0.7ex; font-size:smaller; margin:0;}
+/*.selected {background-color:#3B3B3B; }
+#menu p a {color:white; text-decoration:none;}
+#menu p a:visited {color:white; text-decoration:none;}*/
+.markdown {padding-left: 2em; font-family: Cambria; font-size: larger; color:#AAAAAA;}
+#document {position:fixed; top:0; left:7em; width:calc(100vw - 7em); height:calc(100vh - 10ex); background-color:#181818;}
+.container {background-color:#1E1E1E;}
+#logcontainer {position:fixed; top:calc(100vh - 10ex); left:0; width:100vw; height: 10ex; background-color:black;}
+#log {width:100%;height:100%; font-size:xx-small;}
+</style>
+</head>
+<body>
+<div id="menu">
+  <p><a href="HelloWorld.html">Hello world</a></p>
+  <p><a href="Methods.html">Methods</a></p>
+</div>
+<div id="document">
+  <div class="markdown">
+    <h1>Methods</h1>
+    <p>Let's separate out hte code into building-blocks, known as "functions":</p>
+  </div>
+  <div class="container" project="Methods" file="a.csx"></div>
+  <div class="markdown">
+      <p>Try changing the name of the functino to GetSampleText. You have to change
+          both the place where you <i>invoke</i> the function, and the place where you
+          <i>declare</i> it. Try changing it to return an integer.
+      </p>
+      <br/>
+      <p>When we write a function, we always want to test what it's doing. Here's how:</p>
+  </div>
+  <div class="container" project="Methods" file="b.csx"></div>
+  <div class="markdown">
+    <p>The <i>AutoRun</i> tests in your code get run automatically while editing. This one failed. Can you fix it?</p>
+        <br/>
+      <p>Download this app as a single-file native binary:
+          <span>
+              <style scoped>
+                  button {margin:0; border:0; padding:1ex; background-color:white; color:#333;}
+                  .active, button:hover {background-color:#0492c8; color:white;}
+              </style>
+              <button type="button" class="active">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
+          </span>
+      </p>
+  </div>
+
+</div>
+<div id="logcontainer"><div id="log"></div></div>
+<script src="node_modules/monaco-editor/dev/vs/loader.js"></script>
+<script src="a.js"></script>
+</body>
+</html>

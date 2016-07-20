@@ -24,6 +24,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApplication1", "Samp
 EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "HelloWorld", "SampleProjects\HelloWorld\HelloWorld.xproj", "{BAA8DE42-C52E-404B-B023-62AABB095109}"
 EndProject
+Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "Methods", "SampleProjects\Methods\Methods.xproj", "{6616481E-1BBE-4426-9DB8-94D8EB184EB0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -58,6 +60,10 @@ Global
 		{BAA8DE42-C52E-404B-B023-62AABB095109}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -66,5 +72,6 @@ Global
 		{7C7A9D98-AFAA-4853-8407-56D64D6B5356} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 		{BAA8DE42-C52E-404B-B023-62AABB095109} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
+		{6616481E-1BBE-4426-9DB8-94D8EB184EB0} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 	EndGlobalSection
 EndGlobal
