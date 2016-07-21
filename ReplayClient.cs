@@ -184,6 +184,7 @@ namespace System.Runtime.CompilerServices
                 {
                     var li = queueTask.Result;
                     queueTask = Queue.ReceiveAsync();
+                    if (li.Content.StartsWith("\"") && li.Content.EndsWith("\\r\\n\"")) li = li.WithContent(li.Content.Substring(0, li.Content.Length - 5) + "\"");
 
                     if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
                     var dbfile = Database[li.File];
