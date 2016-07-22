@@ -3,6 +3,7 @@
     "Microsoft.CodeAnalysis": "2.0.0-beta5-60713-06",
     "Microsoft.CodeAnalysis.Workspaces.Common": "2.0.0-beta5-60713-06",
     "Microsoft.DotNet.ProjectModel.Workspaces": "1.0.0-preview2-003121",
+    "Newtonsoft.Json": "9.0.1",
     "System.Threading.Tasks.Dataflow": "4.6.0"
   },
   "frameworks": {

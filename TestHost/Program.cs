@@ -113,13 +113,115 @@ class Program
     }
 
 
-    static async Task TestWorkspaceAsync()
+    static async Task TestWorkspaceAsync(CancellationToken cancel = default(CancellationToken))
     {
         await Task.Delay(0);
         var dir = Directory.GetCurrentDirectory();
         for (; dir != null; dir = Path.GetDirectoryName(dir)) if (Directory.Exists(dir + "/SampleProjects")) break;
-        dir = Path.GetFullPath(dir + "/SampleProjects/HelloWorld");
+        dir = Path.GetFullPath(dir + "/SampleProjects/Methods");
         if (!Directory.Exists(dir)) throw new DirectoryNotFoundException(dir);
+        Directory.CreateDirectory(dir + "/obj/replay");
+        var projName = "Methods";
+
+        // Scrape all the #r nuget references out of the .csx file
+        var nugetReferences = new List<Tuple<string,string>>();
+        foreach (var file in Directory.GetFiles(dir,"*.csx"))
+        {
+            using (var stream = new StreamReader(file))
+            {
+                while (true)
+                {
+                    // Look for lines of the form "#r NugetName [Version] [// comment]" (where NugetName doesn't end with .dll)
+                    // and keep NugetName + Version
+                    // Stop looking once we find a line that's not "//", not "#", and not whitespace.
+                    var s = await stream.ReadLineAsync();
+                    if (s == null) break;
+                    s = s.Trim();
+                    if (!s.StartsWith("#") && !s.StartsWith("//") && s != "") break;
+                    if (!s.StartsWith("#r ")) continue;
+                    s = s.Substring(3).Trim();
+                    int i = s.IndexOf("//");
+                    if (i != -1) s = s.Substring(0, i - 1).Trim();
+                    if (s.EndsWith(".dll", StringComparison.InvariantCultureIgnoreCase)) continue;
+                    i = s.IndexOf(" ");
+                    string v = null;
+                    if (i != -1) { v = s.Substring(i).Trim(); s = s.Substring(0, i).Trim(); }
+                    nugetReferences.Add(Tuple.Create(s,v));
+                }
+            }
+        }
+
+        // Check if we need to update project.json
+        // * We'd like to use the one in <dir>/obj/replay/project.json
+        // * But if it doesn't contain all nugetReferences, or if the one in <dir>/project.json is newer,
+        //   then we need a new one
+        Newtonsoft.Json.Linq.JObject pjson = null;
+        if (File.Exists(dir + "/obj/replay/project.json"))
+        {
+            pjson = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(dir + "/project.json"));
+            var lastWrite = new FileInfo(dir + "/obj/replay/project.json").LastWriteTimeUtc;
+            if (!File.Exists(dir + "/project.json") || new FileInfo(dir+"/project.json").LastWriteTimeUtc < lastWrite)
+            {
+                var deps = pjson["dependencies"] as Newtonsoft.Json.Linq.JObject;
+                if (nugetReferences.Any(nref => deps.Property(nref.Item1) == null)) pjson = null;
+            }
+        }
+        if (pjson == null)
+        {
+            // we need to update it
+            if (File.Exists(dir+"/project.json"))
+            {
+                pjson = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(dir + "/project.json"));
+            }
+            else
+            {
+                pjson = Newtonsoft.Json.Linq.JObject.Parse(@"{
+                      ""version"": ""1.0.0-*"",
+                      ""buildOptions"": {""emitEntryPoint"": true},
+                      ""dependencies"": {""Microsoft.NETCore.App"": {""type"": ""platform"",""version"": ""1.0.0""},},
+                      ""frameworks"": {""netcoreapp1.0"": {""imports"": [""dotnet5.6"", ""dnxcore50"", ""portable-net45+win8""]}}
+                    }");
+            }
+            var deps = pjson["dependencies"] as Newtonsoft.Json.Linq.JObject;
+            foreach (var nref in nugetReferences)
+            {
+                if (deps.Property(nref.Item1) == null) deps.Add(nref.Item1, nref.Item2);
+            }
+            File.WriteAllText(dir + "/obj/replay/project.json", pjson.ToString());
+        }
+
+        if (!File.Exists(dir + $"/obj/replay/dotnet-compile-csc.rsp")
+            || !File.Exists(dir + $"/obj/replay/{projName}.deps.json")
+            || !File.Exists(dir + $"/obj/replay/{projName}.runtimeconfig.dev.json")
+            || !File.Exists(dir + $"/obj/replay/{projName}.runtimeconfig.json"))
+        {
+            File.WriteAllText(dir + "/obj/replay/dummy.cs", "class DummyProgram { static void Main() {} }");
+            File.Delete(dir + "/obj/replay/project.lock.json");
+            var tt1 = await RunAsync("dotnet.exe", "restore", dir + "/obj/replay", cancel);
+            if (!File.Exists(dir + "/obj/replay/project.lock.json")) throw new Exception(tt1.Item1 + "\r\n" + tt1.Item2);
+
+            File.Delete(dir + $"/obj/replay/dotnet-compile-csc.rsp");
+            File.Delete(dir + $"/obj/replay/dotnet-compile.assemblyinfo.cs");
+            File.Delete(dir + $"/obj/replay/{projName}.deps.json");
+            File.Delete(dir + $"/obj/replay/{projName}.runtimeconfig.dev.json");
+            File.Delete(dir + $"/obj/replay/{projName}.runtimeconfig.json");
+            var tt2 = await RunAsync("dotnet.exe", "build", dir + "/obj/replay", cancel);
+            File.Copy(dir + "/obj/replay/obj/Debug/netcoreapp1.0/dotnet-compile-csc.rsp", dir + "/obj/replay/dotnet-compile-csc.rsp");
+            File.Copy(dir + "/obj/replay/obj/Debug/netcoreapp1.0/dotnet-compile.assemblyinfo.cs", dir + "/obj/replay/dotnet-compile.assemblyinfo.cs");
+            File.Copy(dir + "/obj/replay/bin/Debug/netcoreapp1.0/replay.deps.json", dir + $"/obj/replay/{projName}.deps.json");
+            File.Copy(dir + "/obj/replay/bin/Debug/netcoreapp1.0/replay.runtimeconfig.dev.json", dir + $"/obj/replay/{projName}.runtimeconfig.dev.json");
+            File.Copy(dir + "/obj/replay/bin/Debug/netcoreapp1.0/replay.runtimeconfig.json", dir + $"/obj/replay/{projName}.runtimeconfig.json");
+
+            Directory.Delete(dir + "/obj/replay/obj", true);
+            Directory.Delete(dir + "/obj/replay/bin", true);
+        }
+        //// If necessary, rebuild to get new csc-rsp file out of the project.json
+        //if (projJ
+        //    !File.Exists(dir+"/obj/replay/csc.rsp") || !File.Exists()
+        //{
+
+        //}
+        Console.WriteLine(pjson);
 
         // 1. Scrape all #r
         // 2. See if project.json needs update; if so "dotnet restore"
@@ -136,6 +238,28 @@ class Program
         // Editor speaks to these files
         // Host will update the individual files, plus have a way of updating the .md when it's time to save
 
+    }
+
+    static async Task<Tuple<string,string>> RunAsync(string fileName, string arguments, string workingDirectory, CancellationToken cancel = default(CancellationToken))
+    {
+        using (var process = new System.Diagnostics.Process())
+        {
+            process.StartInfo.FileName = fileName;
+            process.StartInfo.Arguments = arguments;
+            process.StartInfo.WorkingDirectory = workingDirectory;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.CreateNoWindow = true;
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using (var reg = cancel.Register(process.Kill)) await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
+            cancel.ThrowIfCancellationRequested();
+            var stdout = await stdoutTask.ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            return Tuple.Create(stdout, stderr);
+        }
     }
 
     static async Task TestClientAsync()
