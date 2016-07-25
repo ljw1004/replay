@@ -158,10 +158,10 @@ class Program
         Newtonsoft.Json.Linq.JObject pjson = null;
         if (File.Exists(dir + "/obj/replay/project.json"))
         {
-            pjson = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(dir + "/project.json"));
             var lastWrite = new FileInfo(dir + "/obj/replay/project.json").LastWriteTimeUtc;
             if (!File.Exists(dir + "/project.json") || new FileInfo(dir+"/project.json").LastWriteTimeUtc < lastWrite)
             {
+                pjson = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(dir + "/obj/replay/project.json"));
                 var deps = pjson["dependencies"] as Newtonsoft.Json.Linq.JObject;
                 if (nugetReferences.Any(nref => deps.Property(nref.Item1) == null)) pjson = null;
             }
@@ -212,31 +212,45 @@ class Program
             File.Copy(dir + "/obj/replay/bin/Debug/netcoreapp1.0/replay.runtimeconfig.dev.json", dir + $"/obj/replay/{projName}.runtimeconfig.dev.json");
             File.Copy(dir + "/obj/replay/bin/Debug/netcoreapp1.0/replay.runtimeconfig.json", dir + $"/obj/replay/{projName}.runtimeconfig.json");
 
+            var lines = File.ReadAllLines(dir + "/obj/replay/dotnet-compile-csc.rsp");
+            lines = lines.Where(s => !s.EndsWith("dotnet-compile.assemblyinfo.cs\""))
+                .Where(s => !s.StartsWith("-out"))
+                .Where(s => !s.EndsWith("dummy.cs\""))
+                .Concat(new[] { $"\"{dir}/obj/replay/dotnet-compile.assemblyinfo.cs\"" })
+                .Concat(new[] { $"-out:\"{dir}/obj/replay/{projName}.replay.exe\"" })
+                .ToArray();
+            File.WriteAllLines(dir + "/obj/replay/dotnet-compile-csc.rsp", lines);
+
             Directory.Delete(dir + "/obj/replay/obj", true);
             Directory.Delete(dir + "/obj/replay/bin", true);
         }
-        //// If necessary, rebuild to get new csc-rsp file out of the project.json
-        //if (projJ
-        //    !File.Exists(dir+"/obj/replay/csc.rsp") || !File.Exists()
-        //{
 
-        //}
+        var workspace = new AdhocWorkspace(Microsoft.CodeAnalysis.Host.Mef.DesktopMefHostServices.DefaultServices);
+        var projectInfo = CommandLineProject.CreateProjectInfo(projName, LanguageNames.CSharp, File.ReadAllText(dir + "/obj/replay/dotnet-compile-csc.rsp"), dir + "/obj/replay", workspace);
+        var project = workspace.AddProject(projectInfo);
+
+        foreach (var file in Directory.GetFiles(dir, "*.cs"))
+        {
+            project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, file).Project;
+        }
+        var sb = new StringBuilder();
+        foreach (var file in Directory.GetFiles(dir, "*.csx"))
+        {
+            var lines = File.ReadAllLines(file).Select(s => s.TrimStart().StartsWith("#r ") ? "// " + s : s);
+            var text = string.Join("\r\n", lines);
+            foreach (var line in lines) sb.AppendLine(line);
+        }
+        project = project.AddDocument("synthesized.csx", sb.ToString(), null, "synthesized.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
+
+        var dd = project.GetCompilationAsync().Result.GetDiagnostics();
+        foreach (var d in dd)
+        {
+            if (d.Severity != DiagnosticSeverity.Warning && d.Severity != DiagnosticSeverity.Error) continue;
+            Console.WriteLine(d);
+        }
+        Console.WriteLine(sb.ToString());
         Console.WriteLine(pjson);
 
-        // 1. Scrape all #r
-        // 2. See if project.json needs update; if so "dotnet restore"
-        // 3. See if project.csc-rsp needs update; if so "dotnet build"
-        // 4. Load the project
-        // 5. Add all .cs and .csx files
-        // 6. For each .md, add a synthesized .csx file that includes all the bits
-        // Editor needs to know offset of each editor chunk, so can send updates to the MD
-        // Host needs to know offset, so it can update each individual csx
-
-        // -- OR --
-
-        // 6. For each md, add a synthesized "file.md/partN.csx"
-        // Editor speaks to these files
-        // Host will update the individual files, plus have a way of updating the .md when it's time to save
 
     }
 
