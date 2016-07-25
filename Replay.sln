@@ -26,6 +26,8 @@ Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "HelloWorld", "SampleProject
 EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "Methods", "SampleProjects\Methods\Methods.xproj", "{6616481E-1BBE-4426-9DB8-94D8EB184EB0}"
 EndProject
+Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestCore", "TestCore\TestCore.xproj", "{A86A7DB9-1BCB-4E79-A770-DA9AF9661FBD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -64,6 +66,10 @@ Global
 		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A86A7DB9-1BCB-4E79-A770-DA9AF9661FBD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A86A7DB9-1BCB-4E79-A770-DA9AF9661FBD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A86A7DB9-1BCB-4E79-A770-DA9AF9661FBD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A86A7DB9-1BCB-4E79-A770-DA9AF9661FBD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
