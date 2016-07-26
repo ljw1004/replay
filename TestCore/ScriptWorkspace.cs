@@ -14,16 +14,25 @@ using System.Text.RegularExpressions;
 
 public static class ScriptWorkspace
 {
-    static Regex reNugetReference = new Regex(@"^\s*#r\s+""([^"",]+)(,\s*([^""]+))?""\s*(//.*)?$");
 
+    static bool NeedsRescan(Project project)
+    {
+        // If there's a newer project.json
+        // Or if there are different files in the directory
+        // Or if any #r have been added/removed
+        var d = project.Documents.First();
+        var v = d.GetTextVersionAsync().Result;
+        return true;
+    }
 
-    public static async Task<Project> FromDirectoryAsync(string dir, CancellationToken cancel = default(CancellationToken))
+    public static async Task<Project> FromDirectoryScanAsync(string dir, CancellationToken cancel = default(CancellationToken))
     {
         Directory.CreateDirectory(dir + "/obj/replay");
         var projName = Path.GetFileName(dir);
 
         // Scrape all the #r nuget references out of the .csx file
         var nugetReferences = new List<Tuple<string, string>>();
+        var reNugetReference = new Regex(@"^\s*#r\s+""([^"",]+)(,\s*([^""]+))?""\s*(//.*)?$");
         foreach (var file in Directory.GetFiles(dir, "*.csx"))
         {
             using (var stream = new StreamReader(File.OpenRead(file)))
@@ -124,6 +133,7 @@ public static class ScriptWorkspace
         var projectInfo = CreateProjectInfoFromCommandLine(projName, LanguageNames.CSharp, File.ReadAllLines(dir + "/obj/replay/dotnet-compile-csc.rsp"), dir + "/obj/replay", workspace);
         var project = workspace.AddProject(projectInfo);
 
+        project = project.AddAdditionalDocument("project.json", File.ReadAllText(dir + "/obj/replay/project.json"), null, "project.json").Project;
         foreach (var file in Directory.GetFiles(dir, "*.cs")) project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).Project;
         foreach (var file in Directory.GetFiles(dir, "*.csx")) project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).WithSourceCodeKind(SourceCodeKind.Script).Project;
         var reFence = new Regex("^( *)((?<back>````*)|(?<tilde>~~~~*)) *([^ \r\n]*)");
@@ -155,6 +165,7 @@ public static class ScriptWorkspace
             }
             //
             var text = csx.ToString();
+            project = project.AddAdditionalDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).Project;
             project = project.AddDocument(Path.GetFileName(file)+".csx", csx.ToString(), null, Path.GetFileName(file)+".csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         }
 
@@ -275,6 +286,8 @@ public static class ScriptWorkspace
             projectName,
             commandLineArguments.OutputFileName,
             language: language,
+            filePath: Path.GetFullPath($"{projectDirectory}/project.json"),
+            outputFilePath: Path.GetFullPath($"{projectDirectory}/{projectName}.dll"),
             compilationOptions: commandLineArguments.CompilationOptions
                 .WithXmlReferenceResolver(xmlFileResolver)
                 .WithAssemblyIdentityComparer(assemblyIdentityComparer)

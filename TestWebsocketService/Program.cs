@@ -82,32 +82,35 @@ public class Program
 
             // Set up monitoring for diagnostics
             var host = new ReplayHost(true);
-            ReplayHost.AdornmentChangedHandler lambdaAdornmentChanged = async (isAdd, tag, file, line, content, deferral, cancel) =>
+            ReplayHost.AdornmentChangedHandler lambdaAdornmentChanged = async (isAdd, tag, file, line, content, deferrable, cancel) =>
             {
                 // ADORNMENT remove 7
                 // ADORNMENT ADD 7 231 Hello world
+                var deferral = deferrable.GetDeferral();
                 var fn = GetShortDocumentName(project, file);
                 var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{fn}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{fn}";
                 if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
-                deferral.SetResult(null);
+                deferral.Complete();
             };
-            ReplayHost.DiagnosticChangedHandler lambdaDiagnosticChanged = async (isAdd, tag, diagnostic, deferral, cancel) =>
+            ReplayHost.DiagnosticChangedHandler lambdaDiagnosticChanged = async (isAdd, tag, diagnostic, deferrable, cancel) =>
             {
                 // DIAGNOSTIC remove 7 file.cs
                 // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive.
                 if (diagnostic.Severity == DiagnosticSeverity.Error || diagnostic.Severity == DiagnosticSeverity.Warning)
                 {
+                    var deferral = deferrable.GetDeferral();
                     var fn = DiagnosticUserFacingComparer.ToFileName(diagnostic);
                     if (fn != null) fn = GetShortDocumentName(project, fn);
                     var msg = isAdd ? $"DIAGNOSTIC\tadd\t{tag}\t{fn}\t{DiagnosticUserFacingComparer.ToString(diagnostic)}" : $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
                     if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
+                    deferral.Complete();
                 }
-                deferral.TrySetResult(null);
             };
-            ReplayHost.ReplayHostError lambdaErred = async (error, deferral, cancel) =>
+            ReplayHost.ReplayHostError lambdaErred = async (error, deferrable, cancel) =>
             {
+                var deferral = deferrable.GetDeferral();
                 if (socket.State != WebSocketState.Closed) await socket.SendStringAsync($"ERROR\tCLIENT: {error}");
-                deferral.TrySetResult(null);
+                deferral.Complete();
             };
 
             host.AdornmentChanged += lambdaAdornmentChanged;

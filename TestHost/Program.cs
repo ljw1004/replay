@@ -24,21 +24,10 @@ class Program
         //TestCodeInstrumentingAsync().GetAwaiter().GetResult();
         //TestScriptInstrumentingAsync().GetAwaiter().GetResult();
         //TestClientAsync().GetAwaiter().GetResult();
-        //TestHostAsync().GetAwaiter().GetResult();
-        TestWorkspaceAsync().GetAwaiter().GetResult();
+        //TestHostAsync("ConsoleApp1").GetAwaiter().GetResult();
+        TestHostAsync("Methods").GetAwaiter().GetResult();
     }
 
-    static async Task TestWorkspaceAsync()
-    {
-        var project = await ScriptWorkspace.FromDirectoryAsync(SampleProjectsDirectory + "/Methods");
-        var dd = project.GetCompilationAsync().Result.GetDiagnostics();
-        foreach (var d in dd)
-        {
-            if (d.Severity != DiagnosticSeverity.Warning && d.Severity != DiagnosticSeverity.Error) continue;
-            Console.WriteLine(d);
-        }
-
-    }
 
     static async Task TestScriptInstrumentingAsync()
     {
@@ -74,51 +63,83 @@ class Program
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
-    static async Task TestHostAsync()
+    static async Task TestHostAsync(string projectName)
     {
-        var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
-        var solution = workspace.CurrentSolution;
-        var project = solution.Projects.Single();
-        var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
-        var document = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script);
-        project = document.Project;
+        Project project; Document document = null; string fileName;
+        if (projectName == "ConsoleApp1")
+        {
+            var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
+            var solution = workspace.CurrentSolution;
+            project = solution.Projects.Single();
+            var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
+            document = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script);
+            project = document.Project;
+            fileName = "a.csx";
+        }
+        else if (projectName == "Methods")
+        {
+            project = await ScriptWorkspace.FromDirectoryScanAsync(SampleProjectsDirectory + "/Methods");
+            document = project.Documents.FirstOrDefault(d => d.Name == "methods.md");
+            fileName = "methods.md";
+        }
+        else
+        {
+            throw new ArgumentException("Projects 'ConsoleApp1' and 'Methods' both work", nameof(projectName));
+        }
+
 
         var host = new ReplayHost(true);
-        host.DiagnosticChanged += (isAdd, tag, diagnostic, deferral, cancel) =>
+        host.DiagnosticChanged += (isAdd, tag, diagnostic, deferrable, cancel) =>
         {
             if (diagnostic.Severity == DiagnosticSeverity.Warning || diagnostic.Severity == DiagnosticSeverity.Error)
             {
                 if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
                 else Console.WriteLine($"-D{tag}");
             }
-            deferral.SetResult(null);
         };
-        host.AdornmentChanged += (isAdd, tag, file, line, content, deferral, cancel) =>
+        host.AdornmentChanged += (isAdd, tag, file, line, content, deferrable, cancel) =>
         {
             if (isAdd) Console.WriteLine($"+A{tag}: {Path.GetFileName(file)}({line}) {content}");
             else Console.WriteLine($"-A{tag}");
-            deferral.SetResult(null);
         };
-        host.Erred += (error, deferral, cancel) =>
+        host.Erred += (error, deferrable, cancel) =>
         {
             Console.WriteLine(error);
-            deferral.SetResult(null);
         };
 
         Console.WriteLine("PROJECT");
         await host.ChangeDocumentAsync(project, null, 0, 0, 0);
         Console.WriteLine("VIEW");
-        await host.WatchAsync("c:\\a.csx", 0, 10);
+        await host.WatchAsync();
 
-        Console.WriteLine("CHANGE");
-        //txt = "int x = 15;\r\nint y = x+3;\r\n\r\nSystem.Console.WriteLine(y);\r\n";
-        //document = document.WithText(SourceText.From(txt));
-        //project = document.Project;
-        //await host.DocumentHasChangedAsync(project, "c:\\a.csx", 1, 1, 2);
-        txt = "int x = 15;\r\nint y = x+2;d\r\nSystem.Console.WriteLine(y);\r\n";
-        document = document.WithText(SourceText.From(txt));
-        project = document.Project;
-        await host.ChangeDocumentAsync(project, "c:\\a.csx", 1, 1, 1);
+        if (projectName == "ConsoleApp1")
+        {
+            Console.WriteLine("CHANGE");
+            var txt = "int x = 15;\r\nint y = x+2;d\r\nSystem.Console.WriteLine(y);\r\n";
+            document = document.WithText(SourceText.From(txt));
+            project = document.Project;
+            await host.ChangeDocumentAsync(project, fileName, 1, 1, 1);
+        }
+        else if (projectName == "Methods")
+        {
+            Console.WriteLine("CHANGE MARKDOWN");
+            var src = document.GetTextAsync().Result;
+            var txt = src.ToString();
+            int i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "Introductory prose\r\n");
+            txt = txt.Replace("Introductory prose", "Some\r\nintroduction.\r\n");
+            document = document.WithText(SourceText.From(txt));
+            project = document.Project;
+            await host.ChangeDocumentAsync(project, fileName, i, 1, 2);
+
+            Console.WriteLine("CHANGE CODE");
+            src = document.GetTextAsync().Result;
+            txt = src.ToString();
+            i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "    return \"in a function plz send hlp\";\r\n");
+            txt = txt.Replace(" plz send help\r\n","\";\r\n\r\n");
+            document = document.WithText(SourceText.From(txt));
+            project = document.Project;
+            await host.ChangeDocumentAsync(project, fileName, i, 1, 2);
+        }
 
 
         Console.WriteLine("DONE");
@@ -190,5 +211,16 @@ static class Extensions
     public static async Task<T> IgnoreCancellation<T>(this Task<T> task) where T:class
     {
         try { return await task; } catch (OperationCanceledException) { return null; }
+    }
+
+    public static int FindIndex<T>(this IEnumerable<T> collection, Func<T,bool> predicate)
+    {
+        int i = 0;
+        foreach (var element in collection)
+        {
+            if (predicate(element)) return i;
+            i++;
+        }
+        return -1;
     }
 }

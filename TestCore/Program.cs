@@ -23,7 +23,7 @@ public class Program
         dir = Path.GetFullPath(dir + "/SampleProjects/Methods");
         if (!Directory.Exists(dir)) throw new DirectoryNotFoundException(dir);
 
-        var project = ScriptWorkspace.FromDirectoryAsync(dir).Result;
+        var project = ScriptWorkspace.FromDirectoryScanAsync(dir).Result;
 
         var dd = project.GetCompilationAsync().Result.GetDiagnostics();
         foreach (var d in dd)

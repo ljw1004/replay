@@ -87,6 +87,23 @@ using System.Threading.Tasks.Dataflow;
 //   It responds with a list of its files
 //   < FILE file
 
+interface IDeferrable { IDeferral GetDeferral(); }
+interface IDeferral { void Complete(); }
+
+class Deferrable : IDeferrable
+{
+    private TaskCompletionSource<object> tcs;
+    public IDeferral GetDeferral() => new Deferral(tcs);
+    public System.Runtime.CompilerServices.TaskAwaiter GetAwaiter() => (tcs == null) ? Task.CompletedTask.GetAwaiter() : (tcs.Task as Task).GetAwaiter();
+}
+
+class Deferral : IDeferral
+{
+    private TaskCompletionSource<object> tcs;
+    public Deferral(TaskCompletionSource<object> tcs) { this.tcs = tcs; }
+    public void Complete() { tcs.SetResult(null); }
+}
+
 
 class ReplayHost : IDisposable
 {
@@ -96,9 +113,9 @@ class ReplayHost : IDisposable
     private Task RunTask;
     private CancellationTokenSource RunCancel = new CancellationTokenSource();
 
-    public delegate void AdornmentChangedHandler(bool isAdd, int tag, string file, int line, string content, TaskCompletionSource<object> deferral, CancellationToken cancel);
-    public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, TaskCompletionSource<object> deferral, CancellationToken cancel);
-    public delegate void ReplayHostError(string error, TaskCompletionSource<object> deferral, CancellationToken cancel);
+    public delegate void AdornmentChangedHandler(bool isAdd, int tag, string file, int line, string content, IDeferrable deferrable, CancellationToken cancel);
+    public delegate void DiagnosticChangedHandler(bool isAdd, int tag, Diagnostic diagnostic, IDeferrable deferrable, CancellationToken cancel);
+    public delegate void ReplayHostError(string error, IDeferrable deferrable, CancellationToken cancel);
     public event AdornmentChangedHandler AdornmentChanged;
     public event DiagnosticChangedHandler DiagnosticChanged;
     public event ReplayHostError Erred;
@@ -136,7 +153,7 @@ class ReplayHost : IDisposable
         Queue.Post(cmd);
         return tcs.Task;
     }
-    public Task WatchAsync(string file, int line, int count)
+    public Task WatchAsync(string file="*", int line=-1, int count=-1)
     {
         if (file == null) throw new ArgumentNullException(nameof(file));
         var tcs = new TaskCompletionSource<object>();
@@ -164,33 +181,26 @@ class ReplayHost : IDisposable
         public int Count;
     }
 
-    private Task SendAdornmentChangeAsync(bool isAdd, int tag, string file, int line, string content, CancellationToken cancel)
+    private async Task SendAdornmentChangeAsync(bool isAdd, int tag, string file, int line, string content, CancellationToken cancel)
     {
-        var c = AdornmentChanged;
-        if (c == null) return Task.FromResult(0);
-        var tcs = new TaskCompletionSource<object>();
-        c.Invoke(isAdd, tag, file, line, content, tcs, cancel);
-        return tcs.Task;
+        var deferrable = new Deferrable();
+        AdornmentChanged?.Invoke(isAdd, tag, file, line, content, deferrable, cancel);
+        await deferrable;
     }
 
-    private Task SendDiagnosticChangeAsync(bool isAdd, int tag, Diagnostic diagnostic, CancellationToken cancel)
+    private async Task SendDiagnosticChangeAsync(bool isAdd, int tag, Diagnostic diagnostic, CancellationToken cancel)
     {
-        var c = DiagnosticChanged;
-        if (c == null) return Task.FromResult(0);
-        var tcs = new TaskCompletionSource<object>();
-        c.Invoke(isAdd, tag, diagnostic, tcs, cancel);
-        return tcs.Task;
+        var deferrable = new Deferrable();
+        DiagnosticChanged?.Invoke(isAdd, tag, diagnostic, deferrable, cancel);
+        await deferrable;
     }
 
-    private Task SendErrorAsync(string error, CancellationToken cancel)
+    private async Task SendErrorAsync(string error, CancellationToken cancel)
     {
-        var c = Erred;
-        if (c == null) return Task.FromResult(0);
-        var tcs = new TaskCompletionSource<object>();
-        c.Invoke(error, tcs, cancel);
-        return tcs.Task;
+        var deferrable = new Deferrable();
+        Erred.Invoke(error, deferrable, cancel);
+        await deferrable;
     }
-
 
     struct TaggedAdornment
     {
