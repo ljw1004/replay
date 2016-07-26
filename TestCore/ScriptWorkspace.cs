@@ -15,16 +15,6 @@ using System.Text.RegularExpressions;
 public static class ScriptWorkspace
 {
 
-    static bool NeedsRescan(Project project)
-    {
-        // If there's a newer project.json
-        // Or if there are different files in the directory
-        // Or if any #r have been added/removed
-        var d = project.Documents.First();
-        var v = d.GetTextVersionAsync().Result;
-        return true;
-    }
-
     public static async Task<Project> FromDirectoryScanAsync(string dir, CancellationToken cancel = default(CancellationToken))
     {
         Directory.CreateDirectory(dir + "/obj/replay");
@@ -165,7 +155,7 @@ public static class ScriptWorkspace
             }
             //
             var text = csx.ToString();
-            project = project.AddAdditionalDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).Project;
+            project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).Project;
             project = project.AddDocument(Path.GetFileName(file)+".csx", csx.ToString(), null, Path.GetFileName(file)+".csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         }
 

@@ -124,12 +124,12 @@ namespace System.Runtime.CompilerServices
 
                     else if (cmds[0] == "WATCH")
                     {
-                        string file, correlation; int line=-1, count=-1;
-                        if ((cmds.Length != 3 && cmds.Length < 5)
+                        string file, correlation; int line, count;
+                        if (cmds.Length < 5
                             || (correlation = cmds[1]) == null
                             || (file = cmds[2]) == null
-                            || (cmds.Length>3 && !int.TryParse(cmds[3], out line))
-                            || (cmds.Length>3 && !int.TryParse(cmds[4], out count)))
+                            || !int.TryParse(cmds[3], out line)
+                            || !int.TryParse(cmds[4], out count))
                         {
                             SystemOut.WriteLine($"ERROR\tExpected 'WATCH correlation file line count <hashes>', got '{cmd}'"); continue;
                         }
@@ -218,7 +218,8 @@ namespace System.Runtime.CompilerServices
                     endTask = new TaskCompletionSource<object>().Task; // hacky way prevent it ever firing again
                     foreach (var dbkv in Database)
                     {
-                        if (watchFile != "*" && !Database.ContainsKey(dbkv.Key)) continue;
+                        if (watchFile == "*" || watchFile == dbkv.Key) { }
+                        else continue;
                         if (!watchHashes.ContainsKey(dbkv.Key)) watchHashes[dbkv.Key] = new Dictionary<int, int>();
                         var dbLines = new HashSet<int>(dbkv.Value.Keys);
                         var watchLines = new HashSet<int>(watchHashes[dbkv.Key].Keys);

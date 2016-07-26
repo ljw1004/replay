@@ -65,22 +65,19 @@ class Program
 
     static async Task TestHostAsync(string projectName)
     {
-        Project project; Document document = null; string fileName;
+        Project project;
         if (projectName == "ConsoleApp1")
         {
             var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(SampleProjectsDirectory + "/ConsoleApp1");
             var solution = workspace.CurrentSolution;
             project = solution.Projects.Single();
             var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
-            document = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script);
+            var document = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script);
             project = document.Project;
-            fileName = "a.csx";
         }
         else if (projectName == "Methods")
         {
             project = await ScriptWorkspace.FromDirectoryScanAsync(SampleProjectsDirectory + "/Methods");
-            document = project.Documents.FirstOrDefault(d => d.Name == "methods.md");
-            fileName = "methods.md";
         }
         else
         {
@@ -88,7 +85,7 @@ class Program
         }
 
 
-        var host = new ReplayHost(true);
+        var host = new ReplayHost(false);
         host.DiagnosticChanged += (isAdd, tag, diagnostic, deferrable, cancel) =>
         {
             if (diagnostic.Severity == DiagnosticSeverity.Warning || diagnostic.Severity == DiagnosticSeverity.Error)
@@ -116,29 +113,43 @@ class Program
         {
             Console.WriteLine("CHANGE");
             var txt = "int x = 15;\r\nint y = x+2;d\r\nSystem.Console.WriteLine(y);\r\n";
+            var document = project.Documents.First(d => d.Name == "a.csx");
             document = document.WithText(SourceText.From(txt));
             project = document.Project;
-            await host.ChangeDocumentAsync(project, fileName, 1, 1, 1);
+            await host.ChangeDocumentAsync(project, "a.csx", 1, 1, 1);
         }
         else if (projectName == "Methods")
         {
             Console.WriteLine("CHANGE MARKDOWN");
+            var document = project.Documents.First(d => d.Name == "methods.md");
             var src = document.GetTextAsync().Result;
             var txt = src.ToString();
-            int i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "Introductory prose\r\n");
-            txt = txt.Replace("Introductory prose", "Some\r\nintroduction.\r\n");
+            int i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "Introductory prose");
+            txt = txt.Replace("Introductory prose", "Some\nintroduction.");
             document = document.WithText(SourceText.From(txt));
             project = document.Project;
-            await host.ChangeDocumentAsync(project, fileName, i, 1, 2);
+            await host.ChangeDocumentAsync(project, "methods.md", i, 1, 2);
+
+            Console.WriteLine("VIEW");
+            await host.WatchAsync();
 
             Console.WriteLine("CHANGE CODE");
+            document = project.Documents.First(d => d.Name == "methods.md");
             src = document.GetTextAsync().Result;
             txt = src.ToString();
-            i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "    return \"in a function plz send hlp\";\r\n");
-            txt = txt.Replace(" plz send help\r\n","\";\r\n\r\n");
+            i = src.Lines.FindIndex(line => txt.Substring(line.Span.Start, line.Span.Length) == "var txt = GetText();");
+            txt = txt.Replace("var txt = GetText();", "var txt = GetText();\n");
             document = document.WithText(SourceText.From(txt));
             project = document.Project;
-            await host.ChangeDocumentAsync(project, fileName, i, 1, 2);
+            //
+            document = project.Documents.First(d => d.Name == "methods.md.csx");
+            src = document.GetTextAsync().Result;
+            txt = src.ToString();
+            txt = txt.Replace("var txt = GetText();", "var txt = GetText();\n");
+            document = document.WithText(SourceText.From(txt));
+            project = document.Project;
+            //
+            await host.ChangeDocumentAsync(project, "methods.md", i, 1, 2);
         }
 
 

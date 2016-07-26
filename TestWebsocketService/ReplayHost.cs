@@ -93,7 +93,7 @@ interface IDeferral { void Complete(); }
 class Deferrable : IDeferrable
 {
     private TaskCompletionSource<object> tcs;
-    public IDeferral GetDeferral() => new Deferral(tcs);
+    public IDeferral GetDeferral() => new Deferral(tcs = new TaskCompletionSource<object>());
     public System.Runtime.CompilerServices.TaskAwaiter GetAwaiter() => (tcs == null) ? Task.CompletedTask.GetAwaiter() : (tcs.Task as Task).GetAwaiter();
 }
 
@@ -263,19 +263,10 @@ class ReplayHost : IDisposable
                 if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
                 {
                     // This is the first time we hear that the new process is up
-                    readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
-
-                    if (watchFile != null)
-                    {
-                        var hashes = (watchFile != null && Database2.ContainsKey(watchFile))
-                                     ? Database2[watchFile].Values.Where((ta) => watchLine <= ta.Line && ta.Line < watchLine + watchCount).ToList()
-                                     : new List<TaggedAdornment>();
-                        // WATCH correlation file line count nhashes line0 hash0 ... lineN hashN
-                        var process = getProcessTask.Result;
-                        var msg = string.Join("\t", hashes.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
-                        msg = $"WATCH\t\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}".TrimEnd(new[] { '\t' });
-                        await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
-                    }
+                    var process = getProcessTask.Result;
+                    readProcessTask = process.ReadLineAsync(cancel);
+                    var msg = MakeWatchCommand(null, watchFile, watchLine, watchCount, Database2);
+                    if (msg != null) await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
                     continue;
                 }
 
@@ -352,13 +343,8 @@ class ReplayHost : IDisposable
                     var correlation = ++TagCounter;
                     watchTcs.AddLast(Tuple.Create(correlation.ToString(), tcs));
                     var process = getProcessTask.Result;
-                    var msg = "";
-                    foreach (var dbkv in hashes)
-                    {
-                        msg += dbkv.Key + "\t" + string.Join("\t", dbkv.Value.Select(ta => $"{ta.Line}\t{ta.ContentHash}"));
-                    }
-                    msg = $"WATCH\t{correlation}\t{watchFile}\t{watchLine}\t{watchCount}\t{hashes.Count}\t{msg}".TrimEnd(new[] { '\t' });
-                    await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
+                    var msg = MakeWatchCommand(correlation, watchFile, watchLine, watchCount, Database2);
+                    if (msg != null) await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
                     continue;
                 }
 
@@ -379,7 +365,7 @@ class ReplayHost : IDisposable
                     int line = -1, hash = -1; string file = null, content = null;
                     bool ok = false;
                     if (cmds.Length == 6 && cmds[1] == "add" && (file = cmds[2]) != null && int.TryParse(cmds[3], out line) && int.TryParse(cmds[4], out hash) && (content = cmds[5]) != null) ok = true;
-                    if (cmds.Length == 4 && cmds[1] == "remove" && (file = cmds[2]) != null && int.TryParse(cmds[2], out line)) ok = true;
+                    if (cmds.Length == 4 && cmds[1] == "remove" && (file = cmds[2]) != null && int.TryParse(cmds[3], out line)) ok = true;
                     if (!ok) { await SendErrorAsync($"ERROR\tHost expected 'REPLAY add file line hash content | REPLAY remove file line', got '{cmd}'", cancel); continue; }
                     //
                     if (cmds[1] == "remove")
@@ -486,6 +472,28 @@ class ReplayHost : IDisposable
         }
     }
 
+    static string MakeWatchCommand(int? correlation, string watchFile, int watchLine, int watchCount, Dictionary<string, Dictionary<int, TaggedAdornment>> Database2)
+    {
+        // WATCH correlation watchFile watchLine watchCount hashFileA hashLineA1 hashValA1 hashLineA2 hashValA2 hashFileB ...
+        if (watchFile == null) return null;
+        var sb = new StringBuilder();
+        sb.Append($"WATCH\t{correlation}\t{watchFile}\t{watchLine}\t{watchCount}");
+        foreach (var dbkv in Database2)
+        {
+            if (watchFile != "*" && watchFile != dbkv.Key) continue;
+            string toAppendFile = dbkv.Key;
+            foreach (var kv in dbkv.Value)
+            {
+                if (watchLine == -1 && watchCount == -1) { }
+                else if (watchLine <= kv.Key && kv.Key < watchLine + watchCount) { }
+                else continue;
+                if (toAppendFile != null) { sb.Append("\t"); sb.Append(toAppendFile); toAppendFile = null; }
+                sb.Append($"\t{kv.Key}\t{kv.Value.ContentHash}");
+            }
+        }
+        return sb.ToString();
+    }
+
     async Task DumpAsync(string msg, Dictionary<string, Dictionary<int, TaggedAdornment>> Database2, string fn, CancellationToken cancel)
     {
         await SendErrorAsync($"DEBUG\t{msg}", cancel).ConfigureAwait(false);
@@ -510,6 +518,7 @@ class ReplayHost : IDisposable
             return null;
         }
 
+        foreach (var documentId in project.DocumentIds) if (project.GetDocument(documentId).Name.EndsWith(".md")) project = project.RemoveDocument(documentId);
         var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var originalDiagnostics = originalComp.GetDiagnostics(cancel);
         bool success = false; string outputFilePath = null;
@@ -575,6 +584,8 @@ class ReplayHost : IDisposable
             var document = await InstrumentDocumentAsync(project.GetDocument(documentId), cancel).ConfigureAwait(false);
             project = document.Project;
         }
+
+
         return project;
     }
 
@@ -606,7 +617,7 @@ class ReplayHost : IDisposable
     {
         string fn = "";
 
-        if (project.OutputFilePath != null)
+        if (false && project.OutputFilePath != null)
         {
             var dir = project.OutputFilePath.Replace("\\obj\\", "\\bin");
             // is a regular app
@@ -619,47 +630,16 @@ class ReplayHost : IDisposable
         }
         else
         {
-            // is .NETCore app
-            // (1) if directory "bin/debug/netcoreapp1.0" doesn't exist then create it by doing "dotnet build"
-            var dir = Path.GetDirectoryName(project.FilePath);
-            var bindir = dir + "/bin/Debug/netcoreapp1.0";
-            if (!File.Exists($"{bindir}/{project.AssemblyName}.deps.json"))
-            {
-                using (var process = new Process())
-                {
-                    process.StartInfo.FileName = "dotnet.exe";
-                    process.StartInfo.Arguments = "build";
-                    process.StartInfo.WorkingDirectory = dir;
-                    process.StartInfo.UseShellExecute = false;
-                    process.StartInfo.RedirectStandardOutput = true;
-                    process.StartInfo.RedirectStandardError = true;
-                    process.StartInfo.CreateNoWindow = true;
-                    process.Start();
-                    var opTask = process.StandardOutput.ReadToEndAsync();
-                    var errTask = process.StandardError.ReadToEndAsync();
-                    using (var reg = cancel.Register(process.Kill)) await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
-                    cancel.ThrowIfCancellationRequested();
-                    var op = await opTask.ConfigureAwait(false);
-                    var err = await errTask.ConfigureAwait(false);
-                    if (!File.Exists($"{bindir}/{project.AssemblyName}.deps.json")) throw new Exception($"Failed to dotnet build - {err}s{op}");
-                }
-            }
-
-            // (2) pick a directory "obj/replay{n}/netcoreapp1.0" which we can use
-            var repdir = "";
+            // is .NETCore app. Trust that it came out of ScriptWorkspace
             for (int i = 0; ; i++)
             {
-                repdir = $"{dir}/obj/Replay{(i == 0 ? "" : i.ToString())}/netcoreapp1.0";
-                fn = $"{repdir}/{project.AssemblyName}.dll";
+                fn = (i == 0) ? project.OutputFilePath : Path.ChangeExtension(project.OutputFilePath, $"_{i}.dll");
                 if (File.Exists(fn)) try { File.Delete(fn); } catch (Exception) { }
-                if (!File.Exists(fn)) break;
-            }
-            if (!File.Exists($"{repdir}/{project.AssemblyName}.deps.json"))
-            {
-                Directory.CreateDirectory(repdir);
-                File.Copy($"{bindir}/{project.AssemblyName}.deps.json", $"{repdir}/{project.AssemblyName}.deps.json");
-                File.Copy($"{bindir}/{project.AssemblyName}.runtimeconfig.dev.json", $"{repdir}/{project.AssemblyName}.runtimeconfig.dev.json");
-                File.Copy($"{bindir}/{project.AssemblyName}.runtimeconfig.json", $"{repdir}/{project.AssemblyName}.runtimeconfig.json");
+                if (File.Exists(fn)) continue;
+                if (!File.Exists(Path.ChangeExtension(fn, ".deps.json"))) File.Copy(Path.ChangeExtension(project.OutputFilePath, ".deps.json"), Path.ChangeExtension(fn, ".deps.json"));
+                if (!File.Exists(Path.ChangeExtension(fn, ".runtimeconfig.dev.json"))) File.Copy(Path.ChangeExtension(project.OutputFilePath, ".runtimeconfig.dev.json"), Path.ChangeExtension(fn, ".runtimeconfig.dev.json"));
+                if (!File.Exists(Path.ChangeExtension(fn, ".runtimeconfig.json"))) File.Copy(Path.ChangeExtension(project.OutputFilePath, ".runtimeconfig.json"), Path.ChangeExtension(fn, ".runtimeconfig.json"));
+                break;
             }
         }
 
@@ -905,7 +885,7 @@ class TreeRewriter : CSharpSyntaxRewriter
 
         if (type == null && expr == null) type = Compilation.GetSpecialType(SpecialType.System_Object);
         if (expr == null) expr = SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
-        string file = (loc == null) ? null : loc.SourceTree.FilePath;
+        string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
         int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
 
         var typeName = SyntaxFactory.ParseTypeName(type.ToDisplayString());
