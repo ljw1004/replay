@@ -31,40 +31,76 @@ var connection : WebSocket;
 var ignoreModelDidChangeContent : boolean = false;
 var adornments: { [file:string]: { [tag:string]: monaco.editor.IContentWidget } } = { };
 var diagnosticTagToZoneId : number[] = [];
-
+var isRequirementMet : Promise<void>;
 
 require.config({ paths: { 'vs': 'node_modules/monaco-editor/dev/vs'}});
-require(['vs/editor/editor.main'], function() {
-   var containers : HTMLElement[] = [].slice.call(document.getElementsByClassName("container"));
+isRequirementMet = new Promise<void>(resolve => require(['vs/editor/editor.main'], () => resolve()));
 
-   var project = containers[0].getAttribute("project");
-   connection = new WebSocket(`ws://localhost:60828/${project}`);
-   connection.onopen = function() {};
-   connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
-   connection.onerror = function(ev:Event) {stdin.post(null); }
-   connection.onclose = function() { stdin.post(null); }
+async function openDocument(project:string, file:string) : Promise<void>
+{ 
+    await isRequirementMet;
 
-   containers.forEach(container => {
-     var file = container.getAttribute("file");
-     var editor = monaco.editor.create(container, {
-        language:"csharp",
-        roundedSelection:true,
-        theme:"vs-dark",
-    	scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}
-     });
+    connection = new WebSocket(`ws://localhost:5000/${project}`);
+    connection.onopen = function() {};
+    connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
+    connection.onerror = function(ev:Event) {stdin.post(null); }
+    connection.onclose = function() { stdin.post(null); }
+
+    var cmd = await stdin.recv();
+    if (cmd !== "OK") {log(`error: expected 'OK', got '${cmd}'`); return;}
+    connection.send("OK");
+    connection.send(`GET\t${file}`);
+    cmd = await stdin.recv();
+    var cmds = cmd.split('\t');
+    if (cmds[0] !== "GET") {log(`error: expected 'GET contents', got '${cmd}'`); return;}
+    var txt = cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
+
+    if (file.endsWith(".cs") || file.endsWith(".csx"))
+    {
+
+    }
+    else if (file.endsWith(".md"))
+    {
+        
+    }
+
+    connection.send("WATCH\t*");
+
+    var ed = findEditor(file);
+    if (ed.editor === null) return;
+    ignoreModelDidChangeContent = true;
+    ed.editor.getModel().setValue(txt);
+    ignoreModelDidChangeContent = false;
+    layout(ed);
+}
+
+    for (var tt of editors) connection.send(`GET\t${tt.file}`);
+
+
+//      var containers : HTMLElement[] = [].slice.call(document.getElementsByClassName("container"));
+
+
+//    containers.forEach(container => {
+//      var file = container.getAttribute("file");
+//      var editor = monaco.editor.create(container, {
+//         language:"csharp",
+//         roundedSelection:true,
+//         theme:"vs-dark",
+//     	scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}
+//      });
      
-     var ed : IEditor = {container:container, editor:editor, file:file};
-     editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,ed));
-     layout(ed);
-     editors.push(ed);
-   });
+//      var ed : IEditor = {container:container, editor:editor, file:file};
+//      editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,ed));
+//      layout(ed);
+//      editors.push(ed);
+//    });
 
-   window.onresize = () =>
-   {
-       for (var item of editors) item.editor.layout();
-   };
-   startDialog();
-});
+//    window.onresize = () =>
+//    {
+//        for (var item of editors) item.editor.layout();
+//    };
+//    startDialog();
+}
 
 function findEditor(file:string):IEditor
 {
@@ -144,20 +180,12 @@ function dumpAdornments():void
 
 async function startDialog():Promise<void>
 {
-
-    var ok = await stdin.recv();
-    if (ok != "OK") {log(`error: expected 'OK', got '${ok}'`); return;}
-    connection.send("OK");
-    for (var tt of editors) connection.send(`GET\t${tt.file}`);
-    connection.send("WATCH\t*");
     while (true)
     {
         var cmd = await stdin.recv();
         var cmds = cmd.split('\t');
-        // GOT file text
-        if (cmds[0] === "GOT") got(cmds[1], cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\"));
         // DIAGNOSTIC remove 7 file.cs
-        else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "remove") diagnosticRemove(cmds[3], Number(cmds[2]));
+        if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "remove") diagnosticRemove(cmds[3], Number(cmds[2]));
         // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive
         else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "add") diagnosticAdd(cmds[3], Number(cmds[2]), cmds[4], cmds[5] === "" ? -1 : Number(cmds[5]), cmds[6] === "" ? -1 : Number(cmds[6]), cmds[7]);
         // ADORNMENT remove 12 Main.csx
@@ -168,15 +196,6 @@ async function startDialog():Promise<void>
     }
 }
 
-function got(file:string, txt:string):void
-{
-    var ed = findEditor(file);
-    if (ed.editor === null) return;
-    ignoreModelDidChangeContent = true;
-    ed.editor.getModel().setValue(txt);
-    ignoreModelDidChangeContent = false;
-    layout(ed);
-}
 
 function diagnosticRemove(file:string, tag: number)
 {
