@@ -128,6 +128,11 @@ class Program
             txt = txt.Replace("Introductory prose", "Some\nintroduction.");
             document = document.WithText(SourceText.From(txt));
             project = document.Project;
+            //
+            document = project.Documents.First(d => d.Name == "methods.md.csx");
+            txt = ScriptWorkspace.Md2Csx("methods.md", txt);
+            document = document.WithText(SourceText.From(txt));
+            project = document.Project;
             await host.ChangeDocumentAsync(project, "methods.md", i, 1, 2);
 
             Console.WriteLine("VIEW");

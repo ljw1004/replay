@@ -224,7 +224,7 @@ namespace System.Runtime.CompilerServices
                         var dbLines = new HashSet<int>(dbkv.Value.Keys);
                         var watchLines = new HashSet<int>(watchHashes[dbkv.Key].Keys);
                         foreach (var line in dbLines.Except(watchLines)) SystemOut.WriteLine($"ERROR\tUpon exit, expected '{dbkv.Key}:({line})' to have adornment, but watcher has nothing");
-                        foreach (var line in watchLines.Except(dbLines)) SystemOut.WriteLine($"REPLAY\tremove\t{dbkv.Key}\t{line}");
+                        foreach (var line in watchLines.Except(dbLines)) SystemOut.WriteLine($"REPLAY\tremove\t{dbkv.Key}\t{line}\t{watchHashes[dbkv.Key][line]}");
                         foreach (var line in dbLines.Intersect(watchLines).Where(i => dbkv.Value[i].ContentHash != watchHashes[dbkv.Key][i])) SystemOut.WriteLine($"ERROR\tUpon exit, expected file '{dbkv.Key}:({line})' to have hash {dbkv.Value[line].ContentHash} but watcher has hash {watchHashes[dbkv.Key][line]}");
                     }
                     SystemOut.WriteLine($"END\trun");

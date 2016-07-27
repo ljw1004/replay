@@ -44,9 +44,6 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\TestCore\ScriptWorkspace.cs">
-      <Link>ScriptWorkspace.cs</Link>
-    </Compile>
     <Compile Include="..\TestWebsocketService\ReplayHost.cs">
       <Link>ReplayHost.cs</Link>
     </Compile>
