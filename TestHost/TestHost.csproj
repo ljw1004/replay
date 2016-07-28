@@ -47,7 +47,7 @@
     <Compile Include="..\TestWebsocketService\ReplayHost.cs">
       <Link>ReplayHost.cs</Link>
     </Compile>
-    <Compile Include="Program.cs" />
+    <Compile Include="TestHost.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="project.json" />

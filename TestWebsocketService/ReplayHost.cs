@@ -263,14 +263,23 @@ class ReplayHost : IDisposable
                 cancel.ThrowIfCancellationRequested();
 
 
-                if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null && getProcessTask.Result != null)
+                if (getProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask == null)
                 {
-                    // This is the first time we hear that the new process is up
-                    var process = getProcessTask.Result;
-                    readProcessTask = process.ReadLineAsync(cancel);
-                    var msg = MakeWatchCommand(null, watchFile, watchLine, watchCount, Database2);
-                    if (msg != null) await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
-                    continue;
+                    // This is the first time we hear that the build+launch finished.
+                    if (getProcessTask.Result == null)
+                    {
+                        // The build finished and has produced its diagnostics...
+                        getProcessTask = null;
+                    }
+                    else
+                    {
+                        // The build finished, the process launched, and we're in dialog with it
+                        var process = getProcessTask.Result;
+                        readProcessTask = process.ReadLineAsync(cancel);
+                        var msg = MakeWatchCommand(null, watchFile, watchLine, watchCount, Database2);
+                        if (msg != null) await process.PostLineAsync(msg, cancel).ConfigureAwait(false);
+                        continue;
+                    }
                 }
 
                 if (getProcessTask?.IsFaulted == true)
@@ -582,22 +591,32 @@ class ReplayHost : IDisposable
             project = document.Project;
         }
 
+        var autoruns = new List<string>();
         foreach (var documentId in originalProject.DocumentIds)
         {
-            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), cancel).ConfigureAwait(false);
+            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), autoruns, cancel).ConfigureAwait(false);
             project = document.Project;
         }
 
+        if (autoruns.Count > 0)
+        {
+            var acode = string.Join(",\r\n", autoruns.Select(s => "\"" + s.Replace("\t", "\\t") + "\""));
+            acode = "string[] GetAutorunMethods() { return new[] {\r\n"
+                    + acode +
+                    "\r\n}; }\r\n";
+            var document = project.AddDocument("GetAutorunMethods.csx", SourceText.From(acode)).WithSourceCodeKind(SourceCodeKind.Script);
+            project = document.Project;
+        }
 
         return project;
     }
 
-    public static async Task<Document> InstrumentDocumentAsync(Document document, CancellationToken cancel)
+    public static async Task<Document> InstrumentDocumentAsync(Document document, List<string> autoruns, CancellationToken cancel)
     {
         var oldComp = await document.Project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var oldTree = await document.GetSyntaxTreeAsync(cancel).ConfigureAwait(false);
         var oldRoot = await oldTree.GetRootAsync(cancel).ConfigureAwait(false);
-        var rewriter = new TreeRewriter(oldComp, oldTree);
+        var rewriter = new TreeRewriter(oldComp, oldTree, autoruns);
         var newRoot = rewriter.Visit(oldRoot);
         return document.WithSyntaxRoot(newRoot);
     }
@@ -719,11 +738,13 @@ class TreeRewriter : CSharpSyntaxRewriter
     SyntaxTree OriginalTree;
     SemanticModel SemanticModel;
     INamedTypeSymbol ConsoleType;
+    List<string> Autoruns;
 
-    public TreeRewriter(Compilation compilation, SyntaxTree tree)
+    public TreeRewriter(Compilation compilation, SyntaxTree tree, List<string> autoruns)
     {
         Compilation = compilation;
         OriginalTree = tree;
+        Autoruns = autoruns;
         SemanticModel = compilation.GetSemanticModel(tree);
         ConsoleType = Compilation.GetTypeByMetadataName("System.Console");
     }
@@ -764,6 +785,21 @@ class TreeRewriter : CSharpSyntaxRewriter
             else if (member.IsKind(SyntaxKind.FieldDeclaration))
             {
                 yield return Visit(member) as FieldDeclarationSyntax;
+            }
+            else if (member.IsKind(SyntaxKind.MethodDeclaration))
+            {
+                var symbol = SemanticModel.GetDeclaredSymbol(member) as IMethodSymbol;
+                var attrs = symbol?.GetAttributes() ?? ImmutableArray<AttributeData>.Empty;
+                foreach (var attr in attrs)
+                {
+                    if (attr.AttributeClass.Name != "AutoRunAttribute") continue;
+                    Location loc = member.GetLocation();
+                    string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
+                    int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
+                    var s = $"{symbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}\t{symbol.Name}\t{file}\t{line}";
+                    Autoruns?.Add(s);
+                }
+                yield return Visit(member) as MethodDeclarationSyntax;
             }
             else
             {
@@ -973,27 +1009,26 @@ public static class ScriptWorkspace
         Directory.CreateDirectory(dir + "/obj/replay");
         var projName = Path.GetFileName(dir);
 
-        // Scrape all the #r nuget references out of the .csx file
+        // Scrape all the #r nuget references out of the .csx/.md files
         var nugetReferences = new List<Tuple<string, string>>();
-        foreach (var file in Directory.GetFiles(dir, "*.csx"))
+        foreach (var file in Directory.GetFiles(dir))
         {
-            using (var stream = new StreamReader(File.OpenRead(file)))
+            string csx;
+            if (Path.GetExtension(file) == ".md") csx = Md2Csx(file, File.ReadAllText(file), false);
+            else if (Path.GetExtension(file) == ".csx") csx = File.ReadAllText(file);
+            else continue;
+            foreach (var line in csx.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None))
             {
-                while (true)
-                {
-                    // Look for lines of the form "#r NugetName [Version] [// comment]" (where NugetName doesn't end with .dll)
-                    // and keep NugetName + Version
-                    // Stop looking once we find a line that's not "//", not "#", and not whitespace.
-                    var s = await stream.ReadLineAsync();
-                    if (s == null) break;
-                    s = s.Trim();
-                    if (!s.StartsWith("#") && !s.StartsWith("//") && s != "") break;
-                    var match = reNugetReference.Match(s);
-                    if (!match.Success) continue;
-                    var name = match.Groups[1].Value;
-                    var version = match.Groups[3].Value;
-                    nugetReferences.Add(Tuple.Create(name, version));
-                }
+                // Look for lines of the form "#r NugetName [Version] [// comment]" (where NugetName doesn't end with .dll)
+                // and keep NugetName + Version
+                // Stop looking once we find a line that's not "//", not "#", and not whitespace.
+                var s = line.Trim();
+                if (!s.StartsWith("#") && !s.StartsWith("//") && s != "") break;
+                var match = reNugetReference.Match(s);
+                if (!match.Success) continue;
+                var name = match.Groups[2].Value;
+                var version = match.Groups[4].Value;
+                nugetReferences.Add(Tuple.Create(name, version));
             }
         }
 
@@ -1081,7 +1116,7 @@ public static class ScriptWorkspace
         foreach (var file in Directory.GetFiles(dir, "*.md"))
         {
             var txt = File.ReadAllText(file);
-            var csx = Md2Csx(file, File.ReadAllText(file));
+            var csx = Md2Csx(file, txt);
             project = project.AddDocument(Path.GetFileName(file), txt, null, Path.GetFileName(file)).Project;
             project = project.AddDocument(Path.GetFileName(file) + ".csx", csx, null, Path.GetFileName(file) + ".csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         }
@@ -1089,9 +1124,9 @@ public static class ScriptWorkspace
         return project;
     }
 
-    struct Span { public int start, length, length2; }
+    struct Span { public int startOffset, lengthWithoutEOL, lengthWithEOL; }
 
-    public static string Md2Csx(string file, string src)
+    public static string Md2Csx(string file, string src, bool commentOutNugetReferences = true)
     {
 
         // First, figure out the line-break positions
@@ -1100,11 +1135,11 @@ public static class ScriptWorkspace
         for (; i < src.Length;)
         {
             var c = src[i];
-            if (c == '\r' && i + 1 < src.Length && src[i + 1] == '\n') { spans.Add(new Span { start = istart, length = i - istart, length2 = i - istart + 2 }); i += 2; istart = i; }
-            else if (c == '\r' || c == '\n') { spans.Add(new Span { start = istart, length = i - istart, length2 = i - istart + 1 }); i += 1; istart = i; }
+            if (c == '\r' && i + 1 < src.Length && src[i + 1] == '\n') { spans.Add(new Span { startOffset = istart, lengthWithoutEOL = i - istart, lengthWithEOL = i - istart + 2 }); i += 2; istart = i; }
+            else if (c == '\r' || c == '\n') { spans.Add(new Span { startOffset = istart, lengthWithoutEOL = i - istart, lengthWithEOL = i - istart + 1 }); i += 1; istart = i; }
             else i++;
         }
-        if (i != src.Length) spans.Add(new Span { start = istart, length = i - istart, length2 = i - istart });
+        if (i != src.Length) spans.Add(new Span { startOffset = istart, lengthWithoutEOL = i - istart, lengthWithEOL = i - istart });
 
         // Now we can use that to parse the string
         var csx = new StringBuilder();
@@ -1113,15 +1148,16 @@ public static class ScriptWorkspace
         for (int iline = 0; iline < spans.Count; iline++)
         {
             var span = spans[iline];
-            var line = src.Substring(span.start, span.length);
+            var line = src.Substring(span.startOffset, span.lengthWithoutEOL);
             if (cbStart == null) // not in a codeblock
             {
                 var match = reFence.Match(line);
                 if (!match.Success) continue;
                 commentOutRefs.Clear();
-                cbStart = span.start + span.length2; // start of the first line after the fence
+                cbStart = span.startOffset + span.lengthWithEOL; // start of the first line after the fence
                 indent = match.Groups[1].Value; fence = match.Groups[2].Value;
-                csx.Append($"#line {iline} \"{Path.GetFileName(file)}\"{src.Substring(span.start + span.length, span.length2 - span.length)}");
+                csx.Append($"#line {iline+2} \"{Path.GetFileName(file)}\"{src.Substring(span.startOffset + span.lengthWithoutEOL, span.lengthWithEOL - span.lengthWithoutEOL)}");
+                // +2 because (A) #line directives are 1-based, and (B) we need to specify the line number of the following line, not this one
             }
             else
             {
@@ -1129,22 +1165,22 @@ public static class ScriptWorkspace
                 if (line2.StartsWith(fence))
                 {
                     // paste the code, but replacing every indicated "#r" with "//"
-                    int ipos = cbStart.Value, iend = span.start;
+                    int ipos = cbStart.Value, iend = span.startOffset;
                     foreach (var commentOutRef in commentOutRefs)
                     {
                         csx.Append(src.Substring(ipos, commentOutRef - ipos));
-                        csx.Append("//");
+                        csx.Append(commentOutNugetReferences ? "//" : "#r");
                         ipos = commentOutRef + 2;
                     }
                     csx.Append(src.Substring(ipos, iend - ipos));
                     // append a newline, using the same line terminator as the end fence
-                    csx.Append(src.Substring(span.start + span.length, span.length2 - span.length));
+                    csx.Append(src.Substring(span.startOffset + span.lengthWithoutEOL, span.lengthWithEOL - span.lengthWithoutEOL));
                     cbStart = null;
                     continue;
                 }
                 var match = reNugetReference.Match(line);
                 if (!match.Success) continue;
-                commentOutRefs.Add(span.start + match.Groups[1].Index);
+                commentOutRefs.Add(span.startOffset + match.Groups[1].Index);
             }
         }
         //

@@ -47,10 +47,13 @@
     <Compile Include="..\ReplayClient.cs">
       <Link>ReplayClient.cs</Link>
     </Compile>
-    <Compile Include="Program.cs" />
+    <Compile Include="SampleTransformedCode.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="project.json" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

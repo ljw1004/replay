@@ -10,7 +10,7 @@ using System.IO;
 using System.Threading;
 using Microsoft.CodeAnalysis.Text;
 
-class Program
+class TestHost
 {
     static string SampleProjectsDirectory;
 
@@ -36,7 +36,7 @@ class Program
         var project = workspace.AddProject(projectInfo);
         var src = SourceText.From(File.ReadAllText(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ScriptApplicationCS\CodeFile1.csx"));
         var document = workspace.AddDocument(project.Id, "CodeFile1.csx", src).WithSourceCodeKind(SourceCodeKind.Script);
-        document = await ReplayHost.InstrumentDocumentAsync(document, CancellationToken.None);
+        document = await ReplayHost.InstrumentDocumentAsync(document, null, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
@@ -59,7 +59,7 @@ class Program
 }
 ";
         var document = workspace.AddDocument(project.Id, "program.cs", SourceText.From(txt));
-        document = await ReplayHost.InstrumentDocumentAsync(document, CancellationToken.None);
+        document = await ReplayHost.InstrumentDocumentAsync(document, null, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 

@@ -2,9 +2,9 @@
 
 function log(o:any):void
 {
-    var s = JSON.stringify(o);
+    let s = JSON.stringify(o);
     console.log(s);
-    var e = document.getElementById("log");
+    let e = document.getElementById("log");
     e.innerText = s + "\n" + e.innerText;
 }
 
@@ -24,12 +24,12 @@ class Channel<T>
     }
 }
 
-var stdin = new Channel<string>();
-var connection : WebSocket;
-var adornments: { [file:string]: { [tag:string]: monaco.editor.IContentWidget } } = { };
-var diagnosticTagToZoneId : number[] = [];
-var isRequirementMet : Promise<void>;
-var currentFile : string;
+let stdin = new Channel<string>();
+let connection : WebSocket;
+let editors : monaco.editor.IStandaloneCodeEditor[] = [];
+let adornments : { [tag:string]: {editor:monaco.editor.IStandaloneCodeEditor, widget:monaco.editor.IContentWidget} } = { };
+let isRequirementMet : Promise<void>;
+let currentFile : string;
 
 require.config({ paths: { 'vs': 'node_modules/monaco-editor/dev/vs'}});
 isRequirementMet = new Promise<void>(resolve => require(['vs/editor/editor.main'], resolve));
@@ -39,126 +39,173 @@ async function openDocument(project:string, file:string) : Promise<void>
     await isRequirementMet;
     currentFile = file;
 
-    connection = new WebSocket(`ws://localhost:60828/${project}`);
+    connection = new WebSocket(`ws://localhost:5000/${project}`);
     connection.onopen = function() {};
     connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
     connection.onerror = function(ev:Event) {stdin.post(null); }
     connection.onclose = function() { stdin.post(null); }
 
-    var cmd = await stdin.recv();
+    let cmd = await stdin.recv();
     if (cmd !== "OK") {log(`error: expected 'OK', got '${cmd}'`); return;}
     connection.send("OK");
-    connection.send(`GET\tfile}`);
+    connection.send(`GET\t${currentFile}`);
     cmd = await stdin.recv();
-    var cmds = cmd.split('\t');
+    let cmds = cmd.split('\t');
     if (cmds[0] !== "GOT") {log(`error: expected 'GOT contents', got '${cmd}'`); return;}
-    var txt = cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
+    let txt = cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
 
-    var docNode = document.getElementById("document");
-    if (file.endsWith(".cs") || file.endsWith(".csx"))
+    let docNode = document.getElementById("document");
+    if (currentFile.endsWith(".cs") || currentFile.endsWith(".csx"))
     {
-        var div = document.createElement("div");
+        let div = document.createElement("div");
         div.className = "container";
         docNode.appendChild(div);
-        var editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}});
+        let editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark"});
         editor.getModel().setValue(txt);
         editor["startLine"] = 1;
         layout2(editor);
+        editors.push(editor);
         editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,editor));
     }
-    else if (file.endsWith(".md"))
+    else if (currentFile.endsWith(".md"))
     {
-        var mdParse = new commonmark.Parser();
-        var mdHtml = new commonmark.HtmlRenderer();
-        var mdDocNode = mdParse.parse(txt);
-        for (var node = mdDocNode.firstChild; node !== null; node = node.next)
+        docNode.style.overflowY = "scroll";
+        let mdParse = new commonmark.Parser();
+        let mdHtml = new commonmark.HtmlRenderer();
+        let mdDocNode = mdParse.parse(txt);
+        let codeLine = 0;
+        for (let node = mdDocNode.firstChild; node !== null; node = node.next)
         {
             if (node.type === "code_block")
             {
-                var div = document.createElement("div");
+                let code = node.literal.replace(/\n$/, "");
+                let div = document.createElement("div");
                 div.className = "container";
                 docNode.appendChild(div);
-                var editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}});
-                editor.getModel().setValue(node.literal);
-                editor["startLine"] = node.sourcepos[0][0];
+                let editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}, lineNumbers: (i) => i + editor["visualStartLine"]});
+                editor.getModel().setValue(code);
+                editor["visualStartLine"] = codeLine;
+                editor["mdStartLine"] = node.sourcepos[0][0];
+                codeLine += editor.getModel().getLineCount();
                 layout2(editor);
+                editors.push(editor);
                 editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,editor));
             }
             else
             {
-                docNode.insertAdjacentHTML("beforeend",mdHtml.render(node));
+                let div = document.createElement("div");
+                div.className = "markdown";
+                div.innerHTML = mdHtml.render(node);
+                docNode.appendChild(div);
             }
         }
     }
+    else
+    {
+        log(`Unrecognized filetype - expected 'csx | cs | md', got '${currentFile}'`);
+    }
 
     
-    // window.onresize = () => { for (var item of editors) item.editor.layout(); };
+    window.onresize = () => { for (let editor of editors) editor.layout(); };
+    connection.send("WATCH\t*");
     startDialog();
 }
 
 
-
 function layout2(editor:monaco.editor.IStandaloneCodeEditor):void
 {
-    var nlines = editor.getModel().getLineCount()+1;
-    var lineheight = editor.getTopForLineNumber(2);
+    let nlines = editor.getModel().getLineCount()+1;
+    let lineheight = editor.getTopForLineNumber(2);
     if (lineheight == 0) lineheight = 19;
     editor.getDomNode().parentElement.style.height = '' + (nlines*lineheight)+'px';
     editor.layout();
 }
 
+function findEditor(line:number):monaco.editor.IStandaloneCodeEditor
+{
+    let r : monaco.editor.IStandaloneCodeEditor = null;
+    for (let editor of editors)
+    {
+        if (editor["mdStartLine"] > line) return r; else r = editor;
+    }
+    return r;
+}
+
 function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2, editor:monaco.editor.IStandaloneCodeEditor):void
 {
+    // If you added a newline, we might have to recompute the height of this control
     layout2(editor);
-    var pos = new monaco.Position(e.range.startLineNumber, e.range.startColumn);
-    var offset = editor.getModel().getOffsetAt(pos);
-    var s = e.text.replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n");
-    connection.send(`CHANGE\t${currentFile}\t${offset}\t${e.rangeLength}\t${s}`);
-    //
-    var line = e.range.startLineNumber;
-    var count = e.range.endLineNumber - e.range.startLineNumber + 1;
-    var newEndPos = ed.editor.getModel().getPositionAt(offset + e.text.length);
-    var newCount = newEndPos.lineNumber - e.range.startLineNumber + 1;
-    //
-    if (!(ed.file in adornments)) adornments[ed.file] = {}
-    var db0 = adornments[ed.file];
-    var db : { [tag:string] : monaco.editor.IContentWidget } = {}
-    Object.keys(db0).forEach(tag =>
+
+    // Send a change notification to the server, using md-relative startLine (not editor-relative) 
+    let startLine = e.range.startLineNumber + editor["mdStartLine"];
+    let startColumn = e.range.startColumn;
+    let startOffset = editor.getModel().getOffsetAt({lineNumber:e.range.startLineNumber, column:startColumn});
+    let oldLength = e.rangeLength;
+    let oldLineCount = e.range.endLineNumber - e.range.startLineNumber + 1;
+    let newEndOffset = editor.getModel().getPositionAt(startOffset + e.text.length);
+    let newLineCount = newEndOffset.lineNumber - e.range.startLineNumber + 1;
+    let s = e.text.replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n");
+    connection.send(`CHANGE\t${currentFile}\t${startLine}\t${e.range.startColumn}\t${oldLineCount}\t${newLineCount}\t${oldLength}\t${s}`);
+
+    // If the line count has changed, we have to adjust line numbers of all subsequent editors
+    if (newLineCount !== oldLineCount)
     {
-        var widget = db0[tag];
-        var wpos = widget.getPosition();
-        var wline = wpos.position.lineNumber;
-        if (wline < line) db[tag] = widget;
-        else if (line <= wline && wline < line + count)
+        for (let other of editors)
         {
-            ed.editor.removeContentWidget(widget);
+            if (other["mdStartLine"] <= editor["mdStartLine"]) continue;
+            other["mdStartLine"] += newLineCount - oldLineCount;
+            other["visualStartLine"] += newLineCount - oldLineCount;
+            other.updateOptions({lineNumbers: (i) => i + other["visualStartLine"]}); // to refresh line numbers
         }
+    }
+
+    // Remove any adornments in affected area, and shift down any adornments below the affected area
+    let newAdornments : { [tag:string]: {editor:monaco.editor.IStandaloneCodeEditor, widget:monaco.editor.IContentWidget} } = { };
+    Object.keys(adornments).forEach(tag =>
+    {
+        let editor = adornments[tag].editor;
+        let widget = adornments[tag].widget;
+        let wpos = widget.getPosition();
+        let wline = wpos.position.lineNumber + editor["mdStartLine"];
+        if (wline < startLine) newAdornments[tag] = {editor:editor, widget:widget};
+        else if (startLine <= wline && wline < startLine + oldLineCount) editor.removeContentWidget(widget);
         else
         {
-            var wnode2 = widget.getDomNode();
-            var wpos2 : monaco.editor.IContentWidgetPosition = { position:{lineNumber:wline+newCount-count, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
-            var wtag2 = tag;
-            var widget2 : monaco.editor.IContentWidget = {getId:()=>wtag2, getDomNode:()=>wnode2, getPosition:()=>wpos2};
-            db[wtag2] = widget2;
-            ed.editor.layoutContentWidget(widget2);
+            let wnode2 = widget.getDomNode();
+            let wpos2 : monaco.editor.IContentWidgetPosition = { position:{lineNumber:wpos.position.lineNumber+newLineCount-oldLineCount, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
+            let wtag2 = tag;
+            let widget2 : monaco.editor.IContentWidget = {getId:()=>wtag2, getDomNode:()=>wnode2, getPosition:()=>wpos2};
+            newAdornments[wtag2] = {editor:editor, widget:widget2};
+            editor.layoutContentWidget(widget2);
         }
     });
-    adornments[ed.file] = db;
+    adornments = newAdornments;
+}
+
+function dump(o:any):void
+{
+    let div = document.createElement("div");
+    for (let key in o)
+    {
+        if (key in div) continue;
+        let val = o[key];
+        if (val === null || typeof val === 'undefined') continue;
+        console.log(`${key}: ${val.constructor.name}`);
+    }
 }
 
 function dumpAdornments():void
 {
     log("ADORNMENTS");
-    for (var file in adornments)
+    for (let tag in adornments)
     {
-        var db = adornments[file];
-        for (var tag in db)
-        {
-            var widget = db[tag];
-            var pos = widget.getPosition().position;
-            var node = widget.getDomNode().innerText;
-            log(`file=${file} line=${pos.lineNumber} tag=${tag} content=${node}`);
-        }
+        let editor = adornments[tag].editor;
+        let widget = adornments[tag].widget;
+        let lineRelativeToEditor = widget.getPosition().position.lineNumber;
+        let lineRelativeToAllEditors = lineRelativeToEditor + editor["visualStartLine"];
+        let lineRelativeToMd = lineRelativeToEditor + editor["mdStartLine"];
+        let node = widget.getDomNode().innerText;
+        log(`lineNumber=${lineRelativeToAllEditors} mdLine=${lineRelativeToMd} tag=${tag} content=${node}`);
     }
 }
 
@@ -166,12 +213,13 @@ async function startDialog():Promise<void>
 {
     while (true)
     {
-        var cmd = await stdin.recv();
-        var cmds = cmd.split('\t');
+        let cmd = await stdin.recv();
+        log(cmd);
+        let cmds = cmd.split('\t');
         // DIAGNOSTIC remove 7 file.cs
-        if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "remove") diagnosticRemove(cmds[3], Number(cmds[2]));
-        // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive
-        else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "add") diagnosticAdd(cmds[3], Number(cmds[2]), cmds[4], cmds[5] === "" ? -1 : Number(cmds[5]), cmds[6] === "" ? -1 : Number(cmds[6]), cmds[7]);
+        if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "remove") diagnosticRemove(cmds[3], cmds[2]);
+        // DIAGNOSTIC add 7 file.cs Hidden startLine startCol length CS8019: Unnecessary using directive
+        else if (cmds[0] === "DIAGNOSTIC" && cmds[1] === "add") diagnosticAdd(cmds[3], cmds[2], cmds[4], Number(cmds[5]), Number(cmds[6]), Number(cmds[7]), cmds[8]);
         // ADORNMENT remove 12 Main.csx
         else if (cmds[0] === "ADORNMENT" && cmds[1] === "remove") adornmentRemove(cmds[3], cmds[2]);
         // ADORNMENT add 12 Main.csx 9 t=2
@@ -181,52 +229,50 @@ async function startDialog():Promise<void>
 }
 
 
-function diagnosticRemove(file:string, tag: number)
+function diagnosticRemove(file:string, tag: string):void
 {
-    var zoneId = diagnosticTagToZoneId[tag];
-    var editor = findEditor(file).editor;
-	editor.changeViewZones( (accessor) => accessor.removeZone(zoneId));
+    tag = "d"+tag;
+    if (!(tag in adornments)) return;
+    let d = adornments[tag];
+    d.editor.removeContentWidget(d.widget);
+    delete adornments[tag];
 }
 
-function diagnosticAdd(file:string, tag:number, severity:string, offset:number, length:number, content:string):void
+function diagnosticAdd(file:string, tag:string, severity:string, startLine:number, startCol:number, length:number, content:string):void
 {
+    tag = "d"+tag;
     if (severity !== "Error" && severity !== "Warning") return;
-    var editor = findEditor(file).editor;
-    if (editor === null) return;
-    var domNode = document.createElement('div');
-    domNode.style.background = (severity === "Error" ? "darkred" : "darkgreen");
-    domNode.style.fontSize = "small";
-    domNode.innerText = content;
-    var zone : monaco.editor.IViewZone = {afterLineNumber:0, heightInLines:2, domNode:domNode};
-    if (offset !== -1 && length !== -1)
-    {
-        var startPos = editor.getModel().getPositionAt(offset);
-        var endPos = editor.getModel().getPositionAt(offset + (length == 0 ? length : length - 1));
-        zone.afterLineNumber = endPos.lineNumber;
-    }
-    editor.changeViewZones( (accessor) => diagnosticTagToZoneId[tag] = accessor.addZone(zone));
+    let editor = findEditor(startLine);
+    let editorStartLine = startLine - editor["mdStartLine"];
     
+    let pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:editorStartLine, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
+    let node = document.createElement("div");
+    node.innerHTML = '<span style="background:darkred; color:white; font-size:small; position:absolute; left:30em; width:30em; overflow:hidden;">// '+content+'</span>';
+    let widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
+    editor.addContentWidget(widget);
+    adornments[tag] = {editor:editor, widget:widget};                 
 }
 
 
 function adornmentAdd(file:string, tag:string, line:number, content:string):void
 {
-    var editor = findEditor(file).editor;
-    if (editor === null) return;
-    if (!(file in adornments)) adornments[file] = {};
-    var pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:line+1, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
-    var node = document.createElement("div");
+    tag = "a"+tag;
+    let editor = findEditor(line);
+    let editorLine = line - editor["mdStartLine"]
+
+    let pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:editorLine, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
+    let node = document.createElement("div");
     node.innerHTML = '<span style="background:#333833; font-size:small; position:absolute; left:30em; width:20em; overflow:hidden;">// '+content+'</span>';
-    var widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
+    let widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
     editor.addContentWidget(widget);
-    adornments[file][tag] = widget;                 
+    adornments[tag] = {editor:editor, widget:widget};                 
 }
 
 function adornmentRemove(file:string, tag:string)
 {
-    var editor = findEditor(file).editor;
-    if (editor === null) return;
-    var db = adornments[file];
-    editor.removeContentWidget(db[tag]);
-    delete db[tag];
+    tag = "a"+tag;
+    if (!(tag in adornments)) return;
+    let a = adornments[tag];
+    a.editor.removeContentWidget(a.widget);
+    delete adornments[tag];
 }

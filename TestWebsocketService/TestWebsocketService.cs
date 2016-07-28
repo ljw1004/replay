@@ -61,19 +61,37 @@ public class TestWebsocketService
                 // ADORNMENT remove 7
                 // ADORNMENT ADD 7 231 Hello world
                 var deferral = deferrable.GetDeferral();
-                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{file}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{file}";
+                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{file}\t{line+1}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{file}";
                 if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
                 deferral.Complete();
             };
             ReplayHost.DiagnosticChangedHandler lambdaDiagnosticChanged = async (isAdd, tag, diagnostic, deferrable, cancel) =>
             {
                 // DIAGNOSTIC remove 7 file.cs
-                // DIAGNOSTIC add 7 file.cs Hidden 70 24 CS8019: Unnecessary using directive.
+                // DIAGNOSTIC add 7 file.cs Hidden startLine startCol length msg
                 if (diagnostic.Severity == DiagnosticSeverity.Error || diagnostic.Severity == DiagnosticSeverity.Warning)
                 {
                     var deferral = deferrable.GetDeferral();
                     var fn = DiagnosticUserFacingComparer.ToFileName(diagnostic);
-                    var msg = isAdd ? $"DIAGNOSTIC\tadd\t{tag}\t{fn}\t{DiagnosticUserFacingComparer.ToString(diagnostic)}" : $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
+                    string msg;
+                    if (isAdd)
+                    {
+                        var file = ""; int startLine = -1, startCol = -1, length = 0;
+                        if (diagnostic.Location.IsInSource)
+                        {
+
+                            var loc = diagnostic.Location.GetMappedLineSpan();
+                            file = loc.HasMappedPath ? loc.Path : diagnostic.Location.SourceTree.FilePath;
+                            startLine = loc.StartLinePosition.Line + 1;
+                            startCol = loc.StartLinePosition.Character + 1;
+                            length = diagnostic.Location.SourceSpan.Length;
+                        }
+                        msg = $"DIAGNOSTIC\tadd\t{tag}\t{file}\t{diagnostic.Severity}\t{startLine}\t{startCol}\t{length}\t{diagnostic.Id}: {diagnostic.GetMessage()}";
+                    }
+                    else
+                    {
+                        msg = $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
+                    }
                     if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
                     deferral.Complete();
                 }
@@ -101,7 +119,7 @@ public class TestWebsocketService
                 if (cmds[0] == "GET")
                 {
                     if (cmds.Length != 2) { await socket.SendStringAsync($"ERROR\tExpected 'GET fn', not '{cmd}'"); return; }
-                    var document = project.Documents.Single(d => d.Name == cmds[1]);
+                    var document = project.Documents.SingleOrDefault(d => d.Name == cmds[1]);
                     if (document == null) { await socket.SendStringAsync($"ERROR\tFile doesn't exist '{cmds[1]}'"); return; }
                     var s = (await document.GetTextAsync()).ToString().Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
                     await socket.SendStringAsync($"GOT\t{cmds[1]}\t{s}");
@@ -109,29 +127,36 @@ public class TestWebsocketService
 
                 else if (cmds[0] == "CHANGE")
                 {
-                    string file, content; int position, length; Document document;
-                    if (cmds.Length != 5
+                    string file, newContent; int startLine, startCol, oldLineCount, newLineCount, oldLength; Document document;
+                    if (cmds.Length != 8
                         || (file = cmds[1]) == null
-                        || (document = project.Documents.Single(d => d.Name == cmds[1])) == null
-                        || !int.TryParse(cmds[2], out position)
-                        || !int.TryParse(cmds[3], out length)
-                        || (content = cmds[4].Replace("\\n","\n").Replace("\\r","\r").Replace("\\\\","\\")) == null)
+                        || (document = project.Documents.SingleOrDefault(d => d.Name == file)) == null
+                        || !int.TryParse(cmds[2], out startLine)
+                        || !int.TryParse(cmds[3], out startCol)
+                        || !int.TryParse(cmds[4], out oldLineCount)
+                        || !int.TryParse(cmds[5], out newLineCount)
+                        || !int.TryParse(cmds[6], out oldLength)
+                        || (newContent = cmds[7].Replace("\\n","\n").Replace("\\r","\r").Replace("\\\\","\\")) == null)
                     {
-                        await socket.SendStringAsync($"ERROR\tExpected 'CHANGE file position length content', not '{cmd}'");
+                        await socket.SendStringAsync($"ERROR\tExpected 'CHANGE file startLine startCol oldLineCount newLineCount oldLength newContent', not '{cmd}'");
                         continue;
                     }
                     //
-                    var change = new TextChange(new TextSpan(position, length), content);
-                    var treeBefore = await document.GetSyntaxTreeAsync();
                     var txt = await document.GetTextAsync();
-                    document = document.WithText(txt.WithChanges(change));
-                    var treeAfter = await document.GetSyntaxTreeAsync();
+                    var startPosition = txt.Lines[startLine - 1].Start + startCol - 1;
+                    var change = new TextChange(new TextSpan(startPosition, oldLength), newContent);
+                    txt = txt.WithChanges(change);
+                    document = document.WithText(txt);
                     project = document.Project;
+                    if (file.EndsWith(".md"))
+                    {
+                        var csx = ScriptWorkspace.Md2Csx(file, txt.ToString());
+                        var csxDocument = project.Documents.Single(d => d.Name == file + ".csx");
+                        csxDocument = csxDocument.WithText(SourceText.From(csx));
+                        project = csxDocument.Project;
+                    }
                     //
-                    var line = treeBefore.GetLineSpan(change.Span).StartLinePosition.Line;
-                    var count = treeBefore.GetLineSpan(change.Span).EndLinePosition.Line - line + 1;
-                    var newcount = treeAfter.GetLineSpan(new TextSpan(position, content.Length)).EndLinePosition.Line - line + 1;
-                    dummy = host.ChangeDocumentAsync(project, document.FilePath, line, count, newcount);
+                    dummy = host.ChangeDocumentAsync(project, document.FilePath, startLine-1, oldLineCount, newLineCount);
                 }
 
                 else if (cmds[0] == "WATCH")
