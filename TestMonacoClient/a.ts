@@ -24,23 +24,22 @@ class Channel<T>
     }
 }
 
-interface IEditor {container:HTMLElement, editor:monaco.editor.IStandaloneCodeEditor; file:string};
-var editors : IEditor[] = [];
 var stdin = new Channel<string>();
 var connection : WebSocket;
-var ignoreModelDidChangeContent : boolean = false;
 var adornments: { [file:string]: { [tag:string]: monaco.editor.IContentWidget } } = { };
 var diagnosticTagToZoneId : number[] = [];
 var isRequirementMet : Promise<void>;
+var currentFile : string;
 
 require.config({ paths: { 'vs': 'node_modules/monaco-editor/dev/vs'}});
-isRequirementMet = new Promise<void>(resolve => require(['vs/editor/editor.main'], () => resolve()));
+isRequirementMet = new Promise<void>(resolve => require(['vs/editor/editor.main'], resolve));
 
 async function openDocument(project:string, file:string) : Promise<void>
 { 
     await isRequirementMet;
+    currentFile = file;
 
-    connection = new WebSocket(`ws://localhost:5000/${project}`);
+    connection = new WebSocket(`ws://localhost:60828/${project}`);
     connection.onopen = function() {};
     connection.onmessage = function(ev:MessageEvent) { stdin.post(ev.data);}
     connection.onerror = function(ev:Event) {stdin.post(null); }
@@ -49,87 +48,72 @@ async function openDocument(project:string, file:string) : Promise<void>
     var cmd = await stdin.recv();
     if (cmd !== "OK") {log(`error: expected 'OK', got '${cmd}'`); return;}
     connection.send("OK");
-    connection.send(`GET\t${file}`);
+    connection.send(`GET\tfile}`);
     cmd = await stdin.recv();
     var cmds = cmd.split('\t');
-    if (cmds[0] !== "GET") {log(`error: expected 'GET contents', got '${cmd}'`); return;}
+    if (cmds[0] !== "GOT") {log(`error: expected 'GOT contents', got '${cmd}'`); return;}
     var txt = cmds[2].replace(/\\r/g,"\r").replace(/\\n/g,"\n").replace(/\\\\/g,"\\");
 
+    var docNode = document.getElementById("document");
     if (file.endsWith(".cs") || file.endsWith(".csx"))
     {
-
+        var div = document.createElement("div");
+        div.className = "container";
+        docNode.appendChild(div);
+        var editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}});
+        editor.getModel().setValue(txt);
+        editor["startLine"] = 1;
+        layout2(editor);
+        editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,editor));
     }
     else if (file.endsWith(".md"))
     {
-        
+        var mdParse = new commonmark.Parser();
+        var mdHtml = new commonmark.HtmlRenderer();
+        var mdDocNode = mdParse.parse(txt);
+        for (var node = mdDocNode.firstChild; node !== null; node = node.next)
+        {
+            if (node.type === "code_block")
+            {
+                var div = document.createElement("div");
+                div.className = "container";
+                docNode.appendChild(div);
+                var editor = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}});
+                editor.getModel().setValue(node.literal);
+                editor["startLine"] = node.sourcepos[0][0];
+                layout2(editor);
+                editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,editor));
+            }
+            else
+            {
+                docNode.insertAdjacentHTML("beforeend",mdHtml.render(node));
+            }
+        }
     }
 
-    connection.send("WATCH\t*");
-
-    var ed = findEditor(file);
-    if (ed.editor === null) return;
-    ignoreModelDidChangeContent = true;
-    ed.editor.getModel().setValue(txt);
-    ignoreModelDidChangeContent = false;
-    layout(ed);
+    
+    // window.onresize = () => { for (var item of editors) item.editor.layout(); };
+    startDialog();
 }
 
-    for (var tt of editors) connection.send(`GET\t${tt.file}`);
 
 
-//      var containers : HTMLElement[] = [].slice.call(document.getElementsByClassName("container"));
-
-
-//    containers.forEach(container => {
-//      var file = container.getAttribute("file");
-//      var editor = monaco.editor.create(container, {
-//         language:"csharp",
-//         roundedSelection:true,
-//         theme:"vs-dark",
-//     	scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}
-//      });
-     
-//      var ed : IEditor = {container:container, editor:editor, file:file};
-//      editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,ed));
-//      layout(ed);
-//      editors.push(ed);
-//    });
-
-//    window.onresize = () =>
-//    {
-//        for (var item of editors) item.editor.layout();
-//    };
-//    startDialog();
-}
-
-function findEditor(file:string):IEditor
+function layout2(editor:monaco.editor.IStandaloneCodeEditor):void
 {
-    for (var item of editors)
-    {
-        if (item.file === file) return item;
-    }
-    return {editor:null, container: null, file:null};
-}
-
-
-function layout(ed:IEditor):void
-{
-    var nlines = ed.editor.getModel().getLineCount()+1;
-    var lineheight = ed.editor.getTopForLineNumber(2);
+    var nlines = editor.getModel().getLineCount()+1;
+    var lineheight = editor.getTopForLineNumber(2);
     if (lineheight == 0) lineheight = 19;
-    ed.container.style.height = '' + (nlines*lineheight)+'px';
-    ed.editor.layout();
+    editor.getDomNode().parentElement.style.height = '' + (nlines*lineheight)+'px';
+    editor.layout();
 }
 
-function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2, ed:IEditor):void
+function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2, editor:monaco.editor.IStandaloneCodeEditor):void
 {
-    if (ignoreModelDidChangeContent) return;
-
-    layout(ed);
+    layout2(editor);
     var pos = new monaco.Position(e.range.startLineNumber, e.range.startColumn);
-    var offset = ed.editor.getModel().getOffsetAt(pos);
+    var offset = editor.getModel().getOffsetAt(pos);
     var s = e.text.replace(/\\/g,"\\\\").replace(/\r/g,"\\r").replace(/\n/g,"\\n");
-    connection.send(`CHANGE\t${ed.file}\t${offset}\t${e.rangeLength}\t${s}`);
+    connection.send(`CHANGE\t${currentFile}\t${offset}\t${e.rangeLength}\t${s}`);
     //
     var line = e.range.startLineNumber;
     var count = e.range.endLineNumber - e.range.startLineNumber + 1;

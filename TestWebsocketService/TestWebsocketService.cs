@@ -17,7 +17,7 @@ using Microsoft.CodeAnalysis;
 using System.Collections.Concurrent;
 using System.Threading.Tasks.Dataflow;
 
-public class Program
+public class TestWebsocketService
 {
     public static void Main(string[] args)
     {
@@ -29,25 +29,6 @@ public class Program
             .Build();
 
         host.Run();
-    }
-
-    public static Document GetDocumentByName(Project project, string name)
-    {
-        var dir = Path.GetDirectoryName(project.FilePath);
-        var fn = Path.GetFullPath($"{dir}/{name}");
-        foreach (var d in project.Documents)
-        {
-            var dfn = Path.GetFullPath(d.FilePath);
-            if (string.Equals(fn, dfn, StringComparison.CurrentCultureIgnoreCase)) return d;
-        }
-        return null;
-    }
-
-    public static string GetShortDocumentName(Project project, string fn)
-    {
-        var dir = Path.GetFullPath(Path.GetDirectoryName(project.FilePath));
-        if (!fn.StartsWith(dir, StringComparison.CurrentCultureIgnoreCase)) throw new Exception("unrecognized document filename");
-        return fn.Substring(dir.Length + 1);
     }
 
     public static async Task DoSocketAsync(HttpContext http, WebSocket socket)
@@ -64,21 +45,14 @@ public class Program
                 if (Directory.Exists(dir + "/SampleProjects")) break;
             }
             dir = Path.GetFullPath(dir + "/SampleProjects" + http.Request.Path.Value);
-            if (!File.Exists(dir+"/project.json")) { await socket.SendStringAsync($"ERROR\tProject doesn't exist '{dir}/project.json'"); return; }
+            if (!Directory.Exists(dir)) { await socket.SendStringAsync($"ERROR\tProject doesn't exist '{dir}'"); return; }
 
             // Load the project, and establish the "OK" handshake to show we've done it
-            var workspace = new Microsoft.DotNet.ProjectModel.Workspaces.ProjectJsonWorkspace(dir);
-            var solution = workspace.CurrentSolution;
-            var project = solution.Projects.Single();
-            // Add script files manually (since they're not done by ProjectJsonWorkspace)
-            foreach (var csxfn in Directory.GetFiles(dir, "*.csx"))
-            {
-                project = project.AddDocument(csxfn, File.ReadAllText(csxfn), null, csxfn).WithSourceCodeKind(SourceCodeKind.Script).Project;
-            }
+            var project = await ScriptWorkspace.FromDirectoryScanAsync(dir);
+
             await socket.SendStringAsync("OK");
             var cmd = await socket.RecvStringAsync();
             if (cmd != "OK") { await socket.SendStringAsync($"ERROR\tExpected 'OK' not '{cmd}'"); return; }
-
 
             // Set up monitoring for diagnostics
             var host = new ReplayHost(true);
@@ -87,8 +61,7 @@ public class Program
                 // ADORNMENT remove 7
                 // ADORNMENT ADD 7 231 Hello world
                 var deferral = deferrable.GetDeferral();
-                var fn = GetShortDocumentName(project, file);
-                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{fn}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{fn}";
+                var msg = isAdd ? $"ADORNMENT\tadd\t{tag}\t{file}\t{line}\t{content}" : $"ADORNMENT\tremove\t{tag}\t{file}";
                 if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
                 deferral.Complete();
             };
@@ -100,7 +73,6 @@ public class Program
                 {
                     var deferral = deferrable.GetDeferral();
                     var fn = DiagnosticUserFacingComparer.ToFileName(diagnostic);
-                    if (fn != null) fn = GetShortDocumentName(project, fn);
                     var msg = isAdd ? $"DIAGNOSTIC\tadd\t{tag}\t{fn}\t{DiagnosticUserFacingComparer.ToString(diagnostic)}" : $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
                     if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
                     deferral.Complete();
@@ -129,7 +101,7 @@ public class Program
                 if (cmds[0] == "GET")
                 {
                     if (cmds.Length != 2) { await socket.SendStringAsync($"ERROR\tExpected 'GET fn', not '{cmd}'"); return; }
-                    var document = GetDocumentByName(project, cmds[1]);
+                    var document = project.Documents.Single(d => d.Name == cmds[1]);
                     if (document == null) { await socket.SendStringAsync($"ERROR\tFile doesn't exist '{cmds[1]}'"); return; }
                     var s = (await document.GetTextAsync()).ToString().Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
                     await socket.SendStringAsync($"GOT\t{cmds[1]}\t{s}");
@@ -140,7 +112,7 @@ public class Program
                     string file, content; int position, length; Document document;
                     if (cmds.Length != 5
                         || (file = cmds[1]) == null
-                        || (document = GetDocumentByName(project, file)) == null
+                        || (document = project.Documents.Single(d => d.Name == cmds[1])) == null
                         || !int.TryParse(cmds[2], out position)
                         || !int.TryParse(cmds[3], out length)
                         || (content = cmds[4].Replace("\\n","\n").Replace("\\r","\r").Replace("\\\\","\\")) == null)
@@ -167,7 +139,7 @@ public class Program
                     string file; int line=-1, count=-1; Document document = null;
                     if ((cmds.Length != 4 && cmds.Length != 2)
                         || (file = cmds[1]) == null
-                        || (file != "*" && (document = GetDocumentByName(project, file)) == null)
+                        || (file != "*" && (document = project.Documents.Single(d => d.Name == file)) == null)
                         || (cmds.Length == 4 && !int.TryParse(cmds[2], out line))
                         || (cmds.Length == 4 && !int.TryParse(cmds[3], out count)))
                     {
@@ -209,7 +181,7 @@ public class Startup
             using (var socket = await http.WebSockets.AcceptWebSocketAsync())
             {
                 if (socket == null || socket.State != WebSocketState.Open) return;
-                await Program.DoSocketAsync(http, socket);
+                await TestWebsocketService.DoSocketAsync(http, socket);
             }
         });
         app.Run(async (context) =>
