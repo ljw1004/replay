@@ -11,16 +11,16 @@ class AutoRunAttribute : System.Attribute { }
 Let's separate out the code into building-blocks, known in code as "functions":
 
 ```csharp
-var result = GetText();
+var result = GetValue();
 System.Console.WriteLine(result);
 
-string GetText()
+string GetValue()
 {
     return "in a function plz send hlp";
 }
 ```
 
-Try changing the name of the above function from `GetText` to `GetSampleText`. You have to change both
+Try changing the name of the above function from `GetValue` to `GetSampleValue`. You have to change both
 the place where you *invoke* the function, and the place where you *declare* it.
 Try changing it to return the integer (`int`) `53` instead of the `string` `"in a function..."`.
 
@@ -32,8 +32,8 @@ When we write a function, we always want to test that it's doing the right thing
 [Fact, AutoRun]
 void TestMyFunction()
 {
-    var txt = GetText();
-    Assert.Equal(txt, "in a function");
+    var result = GetValue();
+    Assert.Equal(result, "in a function");
 }
 ```
 
