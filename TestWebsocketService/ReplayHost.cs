@@ -1298,7 +1298,7 @@ public static class ScriptWorkspace
         var docs = new List<DocumentInfo>();
         foreach (var file in commandLineArguments.SourceFiles)
         {
-            if (!File.Exists(file.Path)) throw new Exception($"Can't find '{file}'");
+            if (!File.Exists(file.Path)) throw new Exception($"Can't find '{file.Path}'");
             var path = Path.GetFullPath(file.Path);
 
             var doc = DocumentInfo.Create(

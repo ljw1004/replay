@@ -22,17 +22,19 @@ while (i < 3)
 }
 ```
 
-You can see it printed the message three times.
-
-___Exercise 2:___ Make it print `10` times. Make it print infinity times. Hint: `while (true)`.
+___Exercise 2:___ You can see it printed the message three times. Make it print `10` times. Make it print infinity times. Hint: `while (true)`.
 
 <br/>
 
 Download this app as a single-file native binary:
 <span>
-    <style scoped>
+    <style>
         button {margin:0; border:0; padding:1ex; background-color:white; color:#333;}
-        .active, button:hover {background-color:#0492c8; color:white;}
+        .downloadactive, button:hover {background-color:#0492c8; color:white;}
     </style>
-    <button type="button" class="active">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
+    <button type="button" class="downloadactive">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
 </span>
+
+<br/>
+
+___[>> Proceed to the next tutorial, "Methods"...](Methods.html)___

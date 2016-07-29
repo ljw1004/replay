@@ -181,7 +181,7 @@ public class TestWebsocketService
         {
             _ex = ex;
         }
-        if (_ex != null) await socket.SendStringAsync($"ERROR\t{_ex.Message}");
+        if (_ex != null) await socket.SendStringAsync($"ERROR\t{_ex.Message} - {_ex.StackTrace.Replace("\r\n"," || ").Replace("\r"," || ").Replace("\n"," || ")}");
     }
 
 }

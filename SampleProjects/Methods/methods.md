@@ -48,9 +48,14 @@ Tip: `[Fact]` indicates a test, and `[AutoRun]` indicates the test gets run auto
 
 Download this app as a single-file native binary:
 <span>
-    <style scoped>
+    <style>
         button {margin:0; border:0; padding:1ex; background-color:white; color:#333;}
-        .active, button:hover {background-color:#0492c8; color:white;}
+        .downloadactive, button:hover {background-color:#0492c8; color:white;}
     </style>
-    <button type="button" class="active">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
+    <button type="button" class="downloadactive">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
 </span>
+
+
+<br/>
+
+___[>> Proceed to the next tutorial, "Web service"...](NYI.html)___

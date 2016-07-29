@@ -1,14 +1,13 @@
 html, body {width: 100vw; height:100vh;margin:0;padding:0; background-color:black; color:white;
 font-family:Segoe UI}
-a {color: cyan; text-decoration: underline;}
-a:visited {color: cyan; text-decoration: underline;}
+a {color: #4080FF; text-decoration:none;}
+.active {text-decoration: underline;}
+a:visited {color: #4080FF; text-decoration:none;}
+a:hover {text-decoration: underline;}
 #menu {position:fixed; top:0; left:0; width:7em; height:calc(100vh - 10ex); padding:0; background-color:#222222;}
 #menu p {padding-left:1.5em; padding-top:0.3ex; padding-bottom:0.7ex; font-size:smaller; margin:0;}
-/*.selected {background-color:#3B3B3B; }
-#menu p a {color:white; text-decoration:none;}
-#menu p a:visited {color:white; text-decoration:none;}*/
 .markdown {padding-left: 2em; font-family: Cambria; font-size: larger; color:#AAAAAA;}
 #document {position:fixed; top:0; left:7em; width:calc(100vw - 7em); height:calc(100vh - 10ex); background-color:#181818;}
-.container {background-color:#1E1E1E;}
+code, .container {background-color:#1E1E1E;}
 #logcontainer {position:fixed; top:calc(100vh - 10ex); left:0; width:100vw; height: 10ex; background-color:black;}
 #log {width:100%;height:100%; font-size:xx-small;}
