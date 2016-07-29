@@ -215,7 +215,7 @@ namespace System.Runtime.CompilerServices
 
             if (!Database.ContainsKey(li.File)) Database[li.File] = new Dictionary<int, LineItem>();
             var dbfile = Database[li.File];
-            LineItem oldli; if (dbfile.TryGetValue(li.Line, out oldli))
+            LineItem oldli; if (dbfile.TryGetValue(li.Line, out oldli) && !li.Content.StartsWith("return="))
             {
                 var c = oldli.Content + " " + li.Content;
                 if (c.Length > 54)
@@ -261,17 +261,23 @@ namespace System.Runtime.CompilerServices
                 }
                 catch (Exception ex)
                 {
-                    if (ex.InnerException is Xunit.Sdk.AssertActualExpectedException)
+                    var li = new LineItem(fileName, methodLineNumber, "TEST FAILED - " + ex.Message);
+                    if (ex.InnerException != null)
                     {
-                        var aaex = ex.InnerException as Xunit.Sdk.AssertActualExpectedException;
-                        var li = new LineItem(fileName, methodLineNumber, $"TEST FAILED - EXPECTED '{aaex.Expected}' - ACTUAL '{aaex.Actual}'");
-                        Queue.Post(li);
+                        var exT = ex.InnerException.GetType().GetTypeInfo();
+                        var exExp = exT.GetProperty("Expected");
+                        var exAct = exT.GetProperty("Actual");
+                        if (exExp != null && exAct != null)
+                        {
+                            var exp = exExp.GetValue(ex.InnerException) as string;
+                            var act = exAct.GetValue(ex.InnerException) as string;
+                            if (exp != null && act != null)
+                            {
+                                li = new LineItem(fileName, methodLineNumber, $"TEST FAILED - EXPECTED '{exp}' - ACTUAL '{act}'");
+                            }
+                        }
                     }
-                    else
-                    {
-                        var li = new LineItem(fileName, methodLineNumber, "TEST FAILED - " + ex.Message);
-                        Queue.Post(li);
-                    }
+                    Queue.Post(li);
                 }
             }
         }

@@ -537,20 +537,12 @@ class ReplayHost : IDisposable
         var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var originalDiagnostics = originalComp.GetDiagnostics(cancel);
         bool success = false; string outputFilePath = null;
-        var regions = new List<RegionDirectiveTriviaSyntax>();
-        project = await InstrumentProjectAsync(project, regions, originalDiagnostics, cancel).ConfigureAwait(false);
+        project = await InstrumentProjectAsync(project, originalDiagnostics, cancel).ConfigureAwait(false);
         var results = await BuildAsync(project, cancel).ConfigureAwait(false);
         success = results.Success; outputFilePath = results.ReplayOutputFilePath;
         var annotatedDiagnostics = results.Diagnostics;
         var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default).ToList();
         foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
-        var regionDiagnostics = regions.Select(node => {
-            var msg = node.EndOfDirectiveToken.LeadingTrivia.ToString();
-            var loc = node.GetLocation();
-            var diagnostic = Diagnostic.Create("REGION1", "", msg, DiagnosticSeverity.Info, DiagnosticSeverity.Info, true, 1, false, location: loc);
-            return diagnostic;
-        });
-        originalDiagnostics = originalDiagnostics.AddRange(regionDiagnostics);
 
         // Remove+add diagnostics as needed
         foreach (var td in database.ToArray())
@@ -580,7 +572,7 @@ class ReplayHost : IDisposable
 
 
 
-    public static async Task<Project> InstrumentProjectAsync(Project originalProject, List<RegionDirectiveTriviaSyntax> regions, ImmutableArray<Diagnostic> diagnostics, CancellationToken cancel)
+    public static async Task<Project> InstrumentProjectAsync(Project originalProject, ImmutableArray<Diagnostic> diagnostics, CancellationToken cancel)
     {
         var project = originalProject;
 
@@ -608,31 +600,41 @@ class ReplayHost : IDisposable
             project = document.Project;
         }
 
-        var autoruns = new List<string>();
+        var autoruns = new List<IMethodSymbol>();
         foreach (var documentId in originalProject.DocumentIds)
         {
-            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), autoruns, regions, errorDeclarations, cancel).ConfigureAwait(false);
+            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), autoruns, errorDeclarations, cancel).ConfigureAwait(false);
             project = document.Project;
         }
 
-        if (autoruns.Count > 0)
+        var autorunCode = "";
+        foreach (var symbol in autoruns)
         {
-            var acode = string.Join(", ", autoruns.Select(s => "\"" + s.Replace("\t", "\\t") + "\""));
-            acode = "string[] AutorunMethods = new[] { " + acode + "};\r\n";
-            acode += "global::System.Runtime.CompilerServices.Replay.AutorunMethods(() => AutorunMethods);\r\n";
-            var document = project.AddDocument("AutorunMethods.csx", SourceText.From(acode)).WithSourceCodeKind(SourceCodeKind.Script);
+            var node = symbol.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax();
+            if (node == null) continue;
+            Location loc = node.GetLocation();
+            string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
+            int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
+            autorunCode += (autorunCode == "" ? "" : ", ") + $"\"{symbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}\t{symbol.Name}\t{file}\t{line}\"";
+        }
+        if (autorunCode != "")
+        {
+            autorunCode = "string[] AutorunMethods = new[] { " + autorunCode + "};\r\n";
+            autorunCode += "global::System.Runtime.CompilerServices.Replay.AutorunMethods(() => AutorunMethods);\r\n";
+            var document = project.AddDocument("AutorunMethods.csx", SourceText.From(autorunCode)).WithSourceCodeKind(SourceCodeKind.Script);
             project = document.Project;
+
         }
 
         return project;
     }
 
-    public static async Task<Document> InstrumentDocumentAsync(Document document, List<string> autoruns, List<RegionDirectiveTriviaSyntax> regions, HashSet<MethodDeclarationSyntax> errorMethods, CancellationToken cancel)
+    public static async Task<Document> InstrumentDocumentAsync(Document document, List<IMethodSymbol> autoruns, HashSet<MethodDeclarationSyntax> errorMethods, CancellationToken cancel)
     {
         var oldComp = await document.Project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var oldTree = await document.GetSyntaxTreeAsync(cancel).ConfigureAwait(false);
         var oldRoot = await oldTree.GetRootAsync(cancel).ConfigureAwait(false);
-        var rewriter = new TreeRewriter(oldComp, oldTree, autoruns, regions, errorMethods);
+        var rewriter = new TreeRewriter(oldComp, oldTree, autoruns, errorMethods);
         var newRoot = rewriter.Visit(oldRoot);
         return document.WithSyntaxRoot(newRoot);
     }
@@ -750,16 +752,14 @@ class TreeRewriter : CSharpSyntaxRewriter
     SyntaxTree OriginalTree;
     SemanticModel SemanticModel;
     INamedTypeSymbol ConsoleType;
-    List<string> Autoruns;
-    List<RegionDirectiveTriviaSyntax> Regions;
+    List<IMethodSymbol> Autoruns;
     HashSet<MethodDeclarationSyntax> ErrorMethods;
 
-    public TreeRewriter(Compilation compilation, SyntaxTree tree, List<string> autoruns, List<RegionDirectiveTriviaSyntax> regions, HashSet<MethodDeclarationSyntax> errorMethods) : base(true)
+    public TreeRewriter(Compilation compilation, SyntaxTree tree, List<IMethodSymbol> autoruns, HashSet<MethodDeclarationSyntax> errorMethods)
     {
         Compilation = compilation;
         OriginalTree = tree;
         Autoruns = autoruns;
-        Regions = regions;
         ErrorMethods = errorMethods;
         SemanticModel = compilation.GetSemanticModel(tree);
         ConsoleType = Compilation.GetTypeByMetadataName("System.Console");
@@ -773,12 +773,6 @@ class TreeRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
         => node.Identifier.Text == "Replay" ? node : base.VisitClassDeclaration(node);
-
-    public override SyntaxNode VisitRegionDirectiveTrivia(RegionDirectiveTriviaSyntax node)
-    {
-        Regions?.Add(node);
-        return base.VisitRegionDirectiveTrivia(node);
-    }
 
     public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
     {
@@ -836,21 +830,12 @@ class TreeRewriter : CSharpSyntaxRewriter
                 }
                 StatementSyntax returnStatement = SyntaxFactory.ReturnStatement(returnExpression);
                 node = node.WithBody(node.Body.WithStatements(SyntaxFactory.List(new[] { returnStatement })));
-                node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
+                //node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
             }
             return node;
         }
 
-        var attrs = symbol?.GetAttributes() ?? ImmutableArray<AttributeData>.Empty;
-        foreach (var attr in attrs)
-        {
-            if (attr.AttributeClass.Name != "AutoRunAttribute") continue;
-            Location loc = node.GetLocation();
-            string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
-            int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
-            var s = $"{symbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}\t{symbol.Name}\t{file}\t{line}";
-            Autoruns?.Add(s);
-        }
+        if (symbol?.GetAttributes().Any(attr => attr.AttributeClass.Name == "AutoRunAttribute") == true) Autoruns?.Add(symbol);
 
         node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
         if (node.Body == null) return node;
@@ -924,14 +909,6 @@ class TreeRewriter : CSharpSyntaxRewriter
         {
             var statement1 = Visit(statement0) as StatementSyntax;
 
-            //if (statement1.IsKind(SyntaxKind.LocalDeclarationStatement))
-            //{
-            //    // int x, y=10 -> int x,y=Log<type>(10,"y",...,1);
-            //    var statement = statement1 as LocalDeclarationStatementSyntax;
-            //    var declaration = VisitVariableDeclaration(statement.Declaration) as VariableDeclarationSyntax;
-            //    yield return statement.WithDeclaration(declaration);
-            //}
-            //else
             if (statement1.IsKind(SyntaxKind.ExpressionStatement))
             {
                 // f(); -> Log(f(),null,...,2) or f();Log(null,null,...,3);
@@ -949,6 +926,22 @@ class TreeRewriter : CSharpSyntaxRewriter
                 else
                 {
                     var log = SyntaxFactory_Log(type, expression, null, statement.GetLocation(), 2);
+                    yield return statement.WithExpression(log);
+                }
+            }
+            else if (statement1.IsKind(SyntaxKind.ReturnStatement))
+            {
+                // return [e]; -> return; or return Log(e,"return",...,2)
+                var statement = statement1 as ReturnStatementSyntax;
+                var expression = statement.Expression;
+                var type = (expression == null) ? null : SemanticModel.GetTypeInfo(expression).ConvertedType;
+                if (type == null || type.SpecialType == SpecialType.System_Void)
+                {
+                    yield return statement;
+                }
+                else
+                {
+                    var log = SyntaxFactory_Log(type, expression, "return", statement.GetLocation(), 2);
                     yield return statement.WithExpression(log);
                 }
             }
@@ -1162,6 +1155,8 @@ public static class ScriptWorkspace
             project = project.AddDocument(Path.GetFileName(file), txt, null, Path.GetFileName(file)).Project;
             project = project.AddDocument(Path.GetFileName(file) + ".csx", csx, null, Path.GetFileName(file) + ".csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         }
+        project = project.AddDocument("AdditionalStuff.cs", SourceText.From(@"class AutoRunAttribute : System.Attribute { }"), null, "AdditionalStuff.cs").Project;
+
 
         return project;
     }

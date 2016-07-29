@@ -1,7 +1,6 @@
-﻿#region preamble into the night my good fellow
-using Xunit;
+﻿//"xunit": "2.2.0-beta2-build3300"
+//using Xunit;
 using System.Runtime.CompilerServices;
-#endregion
 
 class AutoRunAttribute : System.Attribute { }
 
@@ -31,21 +30,12 @@ class Program
         Replay.Log<object>(null, null, null, -1, 9); return "in a function plz send hlp";
     }
 
-#line 1000 "methods.md"
-    [Fact, AutoRun]
-    void TestMyFunction()
-    {
-        Replay.Log<object>(null, null, null, -1, 9);
-        var txt = Replay.Log<string>(GetText(), "txt", "methods.md", 30, 1);
-        Assert.Equal(txt, "in a function");
-        Replay.Log<object>(null, null, "methods.md", 31, 3);
-    }
-}
-
-public static class GetAutorunMethods
-{
-    public static string[] Get()
-    {
-        return new[] { "Program\tTestMyFunction\tSampleTransformedCode.cs\t23" };
-    }
+    //[Fact, AutoRun]
+    //void TestMyFunction()
+    //{
+    //    Replay.Log<object>(null, null, null, -1, 9);
+    //    var txt = Replay.Log<string>(GetText(), "txt", "methods.md", 30, 1);
+    //    Assert.Equal(txt, "in a function");
+    //    Replay.Log<object>(null, null, "methods.md", 31, 3);
+    //}
 }

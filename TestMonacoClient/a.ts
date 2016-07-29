@@ -87,10 +87,9 @@ async function openDocument(project:string, file:string) : Promise<void>
                 editor["visualStartLine"] = codeLine;
                 editor["mdStartLine"] = node.sourcepos[0][0];
                 codeLine += editor.getModel().getLineCount();
-                layout2(editor);
+                if (!maybeCollapseEditor(editor)) layout2(editor);
                 editors.push(editor);
                 editor.getModel().onDidChangeContent((e) => modelDidChangeContent(e,editor));
-                editor.getDomNode().parentElement.onclick = (ev) => editorDidFocusEditor(editor);
             }
             else
             {
@@ -112,6 +111,36 @@ async function openDocument(project:string, file:string) : Promise<void>
     startDialog();
 }
 
+function maybeCollapseEditor(editor:monaco.editor.IStandaloneCodeEditor):void
+{
+    if (editors.length !== 0 && editor !== editors[0]) return; // will only collapse the first block
+    let nlines=0, npreambles=0;
+    for (let i=1; i<=editor.getModel().getLineCount(); i++)
+    {
+        nlines++;
+        let line = editor.getModel().getLineContent(i).trim();
+        if (line.startsWith("#") || line.startsWith("using") || line.startsWith("//")) npreambles++;
+        else if (line === "") nlines--;
+    }
+    if (npreambles < nlines*0.75) return;
+    
+    let dom = editor.getDomNode().parentElement;
+    dom.style.display = "none";
+
+    let div = document.createElement("div");
+    div.className = "container";
+    div.style.height = "19px";
+    dom.insertAdjacentElement("afterend",div);
+    let editor2 = monaco.editor.create(div, {language:"csharp", roundedSelection:true, theme:"vs-dark", scrollbar: {verticalScrollbarSize:0, handleMouseWheel:false}});
+    editor2.getModel().setValue("// [click to expand the boring preliminaries...]");
+
+    div.onclick = (ev) => {
+        div.onclick = null;
+        div.parentNode.removeChild(div);
+        dom.style.display = null;
+        layout2(editor);
+    };
+}
 
 function layout2(editor:monaco.editor.IStandaloneCodeEditor):void
 {
@@ -170,6 +199,11 @@ function modelDidChangeContent(e:monaco.editor.IModelContentChangedEvent2, edito
     let newAdornments : { [tag:string]: {editor:monaco.editor.IStandaloneCodeEditor, widget:monaco.editor.IContentWidget} } = { };
     Object.keys(adornments).forEach(tag =>
     {
+        if (tag.startsWith("d"))
+        {
+            newAdornments[tag] = adornments[tag];
+            return;
+        }
         let editor = adornments[tag].editor;
         let widget = adornments[tag].widget;
         let wpos = widget.getPosition();
@@ -247,26 +281,17 @@ function diagnosticRemove(tag: string):void
 function diagnosticAdd(file:string, tag:string, severity:string, startLine:number, startCol:number, length:number, content:string):void
 {
     tag = "d"+tag;
+
+    if (severity !== "Error" && severity !== "Warning") return;
+
     let editor = findEditor(startLine);
     let editorStartLine = startLine - editor["mdStartLine"];
-
-    if (severity === "Info" && content.startsWith("REGION1: "))
-    {
-        let msg = content.substr(9);
-        let dom = editor.getDomNode().parentElement;
-        dom.style.height = "5px";
-        editor.layout();
-        return;
-    }
-    else if (severity === "Error" || severity === "Warning")
-    {
-        let pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:editorStartLine, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
-        let node = document.createElement("div");
-        node.innerHTML = '<span style="background:darkred; color:white; font-size:small; position:absolute; left:50em; width:30em; overflow:hidden;">// '+content+'</span>';
-        let widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
-        editor.addContentWidget(widget);
-        adornments[tag] = {editor:editor, widget:widget};
-    }                 
+    let pos : monaco.editor.IContentWidgetPosition = { position:{lineNumber:editorStartLine, column:0}, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT]};
+    let node = document.createElement("div");
+    node.innerHTML = '<span style="background:darkred; color:white; font-size:small; position:absolute; left:50em; width:30em; overflow:hidden;">// '+content+'</span>';
+    let widget : monaco.editor.IContentWidget = {getId:()=>tag, getDomNode:()=>node, getPosition:()=>pos};
+    editor.addContentWidget(widget);
+    adornments[tag] = {editor:editor, widget:widget};
 }
 
 
@@ -280,9 +305,9 @@ function adornmentAdd(file:string, tag:string, line:number, content:string):void
     let node = document.createElement("div");
     if (content.startsWith("TEST FAILED - EXPECTED"))
     {
-        let re = /^(TEST FAILED) - (EXPECTED .*) - (ACTUAL .*)$/g;
+        let re = /^(TEST FAILED) - EXPECTED (.*) - ACTUAL (.*)$/g;
         let match = re.exec(content);
-        let msg = match[1] + "<br/>" + match[2] + "<br/>" + match[3];  
+        let msg = "Assert.Equal TEST FAILED<br/>EXPECTED TO GET: " + match[2] + "<br/>ACTUALLY GOT:" + match[3];  
         node.innerHTML = '<span style="background:darkred; font-size:small; position:absolute; left:50em; width:30em; overflow:hidden; white-space:nowrap;">'+msg+'</span>';
     }
     else if (content.startsWith("TEST FAILED"))

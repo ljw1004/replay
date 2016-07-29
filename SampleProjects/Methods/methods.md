@@ -1,18 +1,16 @@
-﻿# Methods
+﻿## Methods
 
 ```csharp
-#region Pease ignore this preamble for now...
 #r "xunit, 2.2.0-beta2-build3300"
+using System;
 using Xunit;
-class AutoRunAttribute : System.Attribute { }
-#endregion
 ```
 
-Let's separate out the code into building-blocks, known in code as "functions":
+When we write code, we usually split it into *functions*. This code has a function named `GetValue`:
 
 ```csharp
 var result = GetValue();
-System.Console.WriteLine(result);
+Console.WriteLine(result);
 
 string GetValue()
 {
@@ -20,24 +18,30 @@ string GetValue()
 }
 ```
 
-Try changing the name of the above function from `GetValue` to `GetSampleValue`. You have to change both
-the place where you *invoke* the function, and the place where you *declare* it.
-Try changing it to return the integer (`int`) `53` instead of the `string` `"in a function..."`.
+___Exercise 1:___ Change the name of the above function from `GetValue` to `GetSampleValue`. You'll have to change two places --
+where you *invoke* the function, and where you *declare* it.
+
+___Exercise 2:___ Chang the function from returning the text string `"in a function..."` to returning the integer `42`. Hint:
+also change the *declared return type* of the function from `string` to `int`.
 
 <br/>
 
-When we write a function, we always want to test that it's doing the right thing. Here's how we might test the above function:
+When we write a function, we usually also test that it's doing the right thing. Here's how we might test the above function:
+
 
 ```csharp
 [Fact, AutoRun]
 void TestMyFunction()
 {
-    var result = GetValue();
-    Assert.Equal(result, "in a function");
+    var testResult = GetValue();
+    Assert.Equal("in a function", testResult);
 }
 ```
 
-The tests in your code get run automatically while editing. This one is failing in several ways. Can you fix it?
+___Exercise 3:___ This test is failing in several ways. Can you fix it?
+
+Tip: `[Fact]` indicates a test, and `[AutoRun]` indicates the test gets run automatically while you're editing online.
+
 
 
 <br/>
@@ -50,4 +54,3 @@ Download this app as a single-file native binary:
     </style>
     <button type="button" class="active">MacOS</button><button type="button">Linux</button><button type="button">Docker</button><button type="button">Windows</button>
 </span>
-
