@@ -11,8 +11,8 @@ class AutoRunAttribute : System.Attribute { }
 Let's separate out the code into building-blocks, known in code as "functions":
 
 ```csharp
-var txt = GetText();
-System.Console.WriteLine(txt);
+var result = GetText();
+System.Console.WriteLine(result);
 
 string GetText()
 {
@@ -20,13 +20,13 @@ string GetText()
 }
 ```
 
-Try changing the name of the function to `GetSampleText`. You have to change both
+Try changing the name of the above function from `GetText` to `GetSampleText`. You have to change both
 the place where you *invoke* the function, and the place where you *declare* it.
-Try changing it to return an integer.
+Try changing it to return the integer (`int`) `53` instead of the `string` `"in a function..."`.
 
 <br/>
 
-When we write a function, we always want to test what it's doing. Here's how:
+When we write a function, we always want to test that it's doing the right thing. Here's how we might test the above function:
 
 ```csharp
 [Fact, AutoRun]
@@ -37,7 +37,7 @@ void TestMyFunction()
 }
 ```
 
-The tests in your code get run automatically while editing. This one failed. Can you fix it?
+The tests in your code get run automatically while editing. This one is failing in several ways. Can you fix it?
 
 
 <br/>
