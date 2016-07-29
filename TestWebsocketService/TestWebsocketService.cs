@@ -69,32 +69,27 @@ public class TestWebsocketService
             {
                 // DIAGNOSTIC remove 7 file.cs
                 // DIAGNOSTIC add 7 file.cs Hidden startLine startCol length msg
-                if (diagnostic.Severity == DiagnosticSeverity.Error || diagnostic.Severity == DiagnosticSeverity.Warning)
+                var deferral = deferrable.GetDeferral();
+                string msg;
+                if (isAdd)
                 {
-                    var deferral = deferrable.GetDeferral();
-                    var fn = DiagnosticUserFacingComparer.ToFileName(diagnostic);
-                    string msg;
-                    if (isAdd)
+                    var file = ""; int startLine = -1, startCol = -1, length = 0;
+                    if (diagnostic.Location.IsInSource)
                     {
-                        var file = ""; int startLine = -1, startCol = -1, length = 0;
-                        if (diagnostic.Location.IsInSource)
-                        {
-
-                            var loc = diagnostic.Location.GetMappedLineSpan();
-                            file = loc.HasMappedPath ? loc.Path : diagnostic.Location.SourceTree.FilePath;
-                            startLine = loc.StartLinePosition.Line + 1;
-                            startCol = loc.StartLinePosition.Character + 1;
-                            length = diagnostic.Location.SourceSpan.Length;
-                        }
-                        msg = $"DIAGNOSTIC\tadd\t{tag}\t{file}\t{diagnostic.Severity}\t{startLine}\t{startCol}\t{length}\t{diagnostic.Id}: {diagnostic.GetMessage()}";
+                        var loc = diagnostic.Location.GetMappedLineSpan();
+                        file = loc.HasMappedPath ? loc.Path : diagnostic.Location.SourceTree.FilePath;
+                        startLine = loc.StartLinePosition.Line + 1;
+                        startCol = loc.StartLinePosition.Character + 1;
+                        length = diagnostic.Location.SourceSpan.Length;
                     }
-                    else
-                    {
-                        msg = $"DIAGNOSTIC\tremove\t{tag}\t{fn}";
-                    }
-                    if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
-                    deferral.Complete();
+                    msg = $"DIAGNOSTIC\tadd\t{tag}\t{file}\t{diagnostic.Severity}\t{startLine}\t{startCol}\t{length}\t{diagnostic.Id}: {diagnostic.GetMessage()}";
                 }
+                else
+                {
+                    msg = $"DIAGNOSTIC\tremove\t{tag}";
+                }
+                if (socket.State != WebSocketState.Closed) await socket.SendStringAsync(msg);
+                deferral.Complete();
             };
             ReplayHost.ReplayHostError lambdaErred = async (error, deferrable, cancel) =>
             {

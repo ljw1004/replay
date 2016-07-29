@@ -1,9 +1,11 @@
 ﻿# Methods
 
 ```csharp
+#region Pease ignore this preamble for now...
 #r "xunit, 2.2.0-beta2-build3300"
 using Xunit;
 class AutoRunAttribute : System.Attribute { }
+#endregion
 ```
 
 Let's separate out the code into building-blocks, known in code as "functions":

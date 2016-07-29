@@ -3,7 +3,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -193,7 +192,6 @@ namespace System.Runtime.CompilerServices
                 if (endTask?.IsCompleted == true)
                 {
                     endTask = new TaskCompletionSource<object>().Task; // hacky way prevent it ever firing again
-                    AutoRun(Database, watchFile, watchLine, watchCount, watchHashes);
                     foreach (var dbkv in Database)
                     {
                         if (watchFile == "*" || watchFile == dbkv.Key) { }
@@ -242,50 +240,37 @@ namespace System.Runtime.CompilerServices
 
         }
 
-        private static void AutoRun(Dictionary<string, Dictionary<int, LineItem>> Database, string watchFile, int watchLine, int watchCount, Dictionary<string, Dictionary<int, int>> watchHashes)
+        public static void AutorunMethods(Func<string[]> autorunsLambda)
         {
-            var t = Type.GetType("GetAutorunMethods");
-            if (t == null) return;
-            var autoruns = t.GetTypeInfo().GetMethod("Get").Invoke(null, null) as string[];
+            var autorunsTarget = autorunsLambda.Target;
+            var autoruns = autorunsLambda();
             foreach (var cmd in autoruns)
             {
                 var cmds = cmd.Split('\t');
                 string className = cmds[0], methodName = cmds[1], fileName = cmds[2];
                 int methodLineNumber = int.Parse(cmds[3]);
                 if (className.StartsWith("global::")) className = className.Replace("global::", "");
-                t = Type.GetType(className);
+                var t = Type.GetType(className);
                 if (t == null) { SystemOut.WriteLine($"ERROR\tAUTORUN class '{className}' not found"); continue; }
-                var method = t.GetTypeInfo().GetMethod(methodName, Reflection.BindingFlags.Public | Reflection.BindingFlags.NonPublic | Reflection.BindingFlags.Static | Reflection.BindingFlags.Instance);
+                var method = t.GetTypeInfo().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
                 if (method == null) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' not found"); continue; }
-                if (!method.IsStatic || method.GetParameters().Length != 0 || method.GetGenericArguments().Length != 0) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' has wrong signature"); continue; }
+                if (method.GetParameters().Length != 0 || method.GetGenericArguments().Length != 0) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' has wrong signature"); continue; }
                 try
                 {
-                    method.Invoke(null, null);
+                    method.Invoke(autorunsTarget, null);
                 }
                 catch (Exception ex)
                 {
                     if (ex.InnerException is Xunit.Sdk.AssertActualExpectedException)
                     {
                         var aaex = ex.InnerException as Xunit.Sdk.AssertActualExpectedException;
-                        var li = new LineItem(fileName, methodLineNumber, "TEST FAILED");
-                        ProcessLineItem(li, Database, watchFile, watchLine, watchCount, watchHashes);
-                        var stack = ex.InnerException.StackTrace.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-                        var culprit = stack.FirstOrDefault(s => !s.TrimStart().StartsWith("at Xunit.Assert"));
-                        var re = new Regex(@"^\s*at .* in (.+):line (\d+)$");
-                        var match = re.Match(culprit ?? "");
-                        if (match.Success)
-                        {
-                            var exFileName = match.Groups[1].Value;
-                            var exLineNumber = int.Parse(match.Groups[2].Value);
-                            exFileName = Path.GetFileName(exFileName);
-                            li = new LineItem(exFileName, exLineNumber, $"EXPECTED '{aaex.Expected}' ACTUAL '{aaex.Actual}'");
-                            ProcessLineItem(li, Database, watchFile, watchLine, watchCount, watchHashes);
-                        }
+                        var li = new LineItem(fileName, methodLineNumber, $"TEST FAILED - EXPECTED '{aaex.Expected}' - ACTUAL '{aaex.Actual}'");
+                        Queue.Post(li);
                     }
                     else
                     {
                         var li = new LineItem(fileName, methodLineNumber, "TEST FAILED - " + ex.Message);
-                        ProcessLineItem(li, Database, watchFile, watchLine, watchCount, watchHashes);
+                        Queue.Post(li);
                     }
                 }
             }

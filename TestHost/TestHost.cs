@@ -9,6 +9,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.IO;
 using System.Threading;
 using Microsoft.CodeAnalysis.Text;
+using System.Collections.Immutable;
 
 class TestHost
 {
@@ -36,7 +37,7 @@ class TestHost
         var project = workspace.AddProject(projectInfo);
         var src = SourceText.From(File.ReadAllText(@"C:\Users\ljw10\Documents\Visual Studio 2015\Projects\ScriptApplicationCS\CodeFile1.csx"));
         var document = workspace.AddDocument(project.Id, "CodeFile1.csx", src).WithSourceCodeKind(SourceCodeKind.Script);
-        document = await ReplayHost.InstrumentDocumentAsync(document, null, CancellationToken.None);
+        document = await ReplayHost.InstrumentDocumentAsync(document, null, null, null, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
@@ -59,7 +60,7 @@ class Program
 }
 ";
         var document = workspace.AddDocument(project.Id, "program.cs", SourceText.From(txt));
-        document = await ReplayHost.InstrumentDocumentAsync(document, null, CancellationToken.None);
+        document = await ReplayHost.InstrumentDocumentAsync(document, null, null, null, CancellationToken.None);
         Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");
     }
 
@@ -88,11 +89,8 @@ class Program
         var host = new ReplayHost(false);
         host.DiagnosticChanged += (isAdd, tag, diagnostic, deferrable, cancel) =>
         {
-            if (diagnostic.Severity == DiagnosticSeverity.Warning || diagnostic.Severity == DiagnosticSeverity.Error)
-            {
-                if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
-                else Console.WriteLine($"-D{tag}");
-            }
+            if (isAdd) Console.WriteLine($"+D{tag}: {diagnostic.GetMessage()}");
+            else Console.WriteLine($"-D{tag}");
         };
         host.AdornmentChanged += (isAdd, tag, file, line, content, deferrable, cancel) =>
         {
@@ -176,7 +174,7 @@ class Program
         var txt = "int x = 15;\r\nint y = x+2;\r\nSystem.Console.WriteLine(y);\r\n";
         project = project.AddDocument("a.csx", txt, null, "c:\\a.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
 
-        project = await ReplayHost.InstrumentProjectAsync(project, CancellationToken.None);
+        project = await ReplayHost.InstrumentProjectAsync(project, null, ImmutableArray<Diagnostic>.Empty, CancellationToken.None);
 
         var document = project.Documents.FirstOrDefault(d => Path.GetFileName(d.FilePath) == "a.csx");
         if (document != null) Console.WriteLine($"{document.FilePath}\r\n{await document.GetTextAsync()}");

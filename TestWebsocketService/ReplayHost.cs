@@ -17,11 +17,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 
-// TODO: use strongly typed Command virtual class for queue
-// TODO: do deferrals properly
+// TODO: unify diagnostics and adornments
 
-
-// Client <-> Host <-> Editor
+// Client <-> Host <-> Editors
 // The host is always on the same machine as the replayer. They communicate by serialization (to ensure clean teardown)
 // The host and editor are in the same process (VSIX) or on remote machines (online).
 // The host can trigger the client to shut down and a new client to launch.
@@ -368,7 +366,7 @@ class ReplayHost : IDisposable
                     continue;
                 }
 
-                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("REPLAY\t"))
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result?.StartsWith("REPLAY\t") == true)
                 {
                     var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
                     var cmds = cmd.Split(new[] { '\t' });
@@ -411,7 +409,7 @@ class ReplayHost : IDisposable
                     continue;
                 }
 
-                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("END\t"))
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result?.StartsWith("END\t") == true)
                 {
                     var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
                     var cmds = cmd.Split(new[] { '\t' });
@@ -434,13 +432,18 @@ class ReplayHost : IDisposable
                     continue;
                 }
 
-                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("ERROR\t"))
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result?.StartsWith("ERROR\t") == true)
                 {
                     var cmd = readProcessTask.Result; readProcessTask = getProcessTask.Result.ReadLineAsync(cancel);
                     await SendErrorAsync($"CLIENT{cmd}", cancel);
                     continue;
                 }
 
+                if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result == null)
+                {
+                    await SendErrorAsync($"CLIENT TERMINATED ABRUBTLY", cancel);
+                    return;
+                }
 
                 if (readProcessTask?.Status == TaskStatus.RanToCompletion && readProcessTask.Result.StartsWith("DEBUG\t"))
                 {
@@ -534,15 +537,20 @@ class ReplayHost : IDisposable
         var originalComp = await project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var originalDiagnostics = originalComp.GetDiagnostics(cancel);
         bool success = false; string outputFilePath = null;
-        if (!originalDiagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
-        {
-            project = await InstrumentProjectAsync(project, cancel).ConfigureAwait(false);
-            var results = await BuildAsync(project, cancel).ConfigureAwait(false);
-            success = results.Success; outputFilePath = results.ReplayOutputFilePath;
-            var annotatedDiagnostics = results.Diagnostics;
-            var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default);
-            foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
-        }
+        var regions = new List<RegionDirectiveTriviaSyntax>();
+        project = await InstrumentProjectAsync(project, regions, originalDiagnostics, cancel).ConfigureAwait(false);
+        var results = await BuildAsync(project, cancel).ConfigureAwait(false);
+        success = results.Success; outputFilePath = results.ReplayOutputFilePath;
+        var annotatedDiagnostics = results.Diagnostics;
+        var causedByAnnotation = annotatedDiagnostics.Except(originalDiagnostics, DiagnosticUserFacingComparer.Default).ToList();
+        foreach (var diagnostic in causedByAnnotation) await SendErrorAsync($"ERROR\tInstrumenting error: '{DiagnosticUserFacingComparer.ToString(diagnostic)}'", cancel).ConfigureAwait(false);
+        var regionDiagnostics = regions.Select(node => {
+            var msg = node.EndOfDirectiveToken.LeadingTrivia.ToString();
+            var loc = node.GetLocation();
+            var diagnostic = Diagnostic.Create("REGION1", "", msg, DiagnosticSeverity.Info, DiagnosticSeverity.Info, true, 1, false, location: loc);
+            return diagnostic;
+        });
+        originalDiagnostics = originalDiagnostics.AddRange(regionDiagnostics);
 
         // Remove+add diagnostics as needed
         foreach (var td in database.ToArray())
@@ -572,9 +580,18 @@ class ReplayHost : IDisposable
 
 
 
-    public static async Task<Project> InstrumentProjectAsync(Project originalProject, CancellationToken cancel)
+    public static async Task<Project> InstrumentProjectAsync(Project originalProject, List<RegionDirectiveTriviaSyntax> regions, ImmutableArray<Diagnostic> diagnostics, CancellationToken cancel)
     {
         var project = originalProject;
+
+        var errorDeclarations = new HashSet<MethodDeclarationSyntax>();
+        foreach (var diagnostic in diagnostics)
+        {
+            if (diagnostic.Severity != DiagnosticSeverity.Error) continue;
+            var node = diagnostic.Location.SourceTree.GetRoot().FindToken(diagnostic.Location.SourceSpan.Start);
+            var decl = node.Parent.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+            if (node != null) errorDeclarations.Add(decl);
+        }
 
         var originalComp = await originalProject.GetCompilationAsync(cancel).ConfigureAwait(false);
         var replay = originalComp.GetTypeByMetadataName("System.Runtime.CompilerServices.Replay");
@@ -594,29 +611,28 @@ class ReplayHost : IDisposable
         var autoruns = new List<string>();
         foreach (var documentId in originalProject.DocumentIds)
         {
-            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), autoruns, cancel).ConfigureAwait(false);
+            var document = await InstrumentDocumentAsync(project.GetDocument(documentId), autoruns, regions, errorDeclarations, cancel).ConfigureAwait(false);
             project = document.Project;
         }
 
         if (autoruns.Count > 0)
         {
-            var acode = string.Join(",\r\n", autoruns.Select(s => "\"" + s.Replace("\t", "\\t") + "\""));
-            acode = "string[] GetAutorunMethods() { return new[] {\r\n"
-                    + acode +
-                    "\r\n}; }\r\n";
-            var document = project.AddDocument("GetAutorunMethods.csx", SourceText.From(acode)).WithSourceCodeKind(SourceCodeKind.Script);
+            var acode = string.Join(", ", autoruns.Select(s => "\"" + s.Replace("\t", "\\t") + "\""));
+            acode = "string[] AutorunMethods = new[] { " + acode + "};\r\n";
+            acode += "global::System.Runtime.CompilerServices.Replay.AutorunMethods(() => AutorunMethods);\r\n";
+            var document = project.AddDocument("AutorunMethods.csx", SourceText.From(acode)).WithSourceCodeKind(SourceCodeKind.Script);
             project = document.Project;
         }
 
         return project;
     }
 
-    public static async Task<Document> InstrumentDocumentAsync(Document document, List<string> autoruns, CancellationToken cancel)
+    public static async Task<Document> InstrumentDocumentAsync(Document document, List<string> autoruns, List<RegionDirectiveTriviaSyntax> regions, HashSet<MethodDeclarationSyntax> errorMethods, CancellationToken cancel)
     {
         var oldComp = await document.Project.GetCompilationAsync(cancel).ConfigureAwait(false);
         var oldTree = await document.GetSyntaxTreeAsync(cancel).ConfigureAwait(false);
         var oldRoot = await oldTree.GetRootAsync(cancel).ConfigureAwait(false);
-        var rewriter = new TreeRewriter(oldComp, oldTree, autoruns);
+        var rewriter = new TreeRewriter(oldComp, oldTree, autoruns, regions, errorMethods);
         var newRoot = rewriter.Visit(oldRoot);
         return document.WithSyntaxRoot(newRoot);
     }
@@ -710,23 +726,19 @@ class DiagnosticUserFacingComparer : IEqualityComparer<Diagnostic>
 
     public static string ToString(Diagnostic diagnostic)
     {
-        var file = "";
-        int offset = -1, length = -1;
-        if (diagnostic.Location.IsInSource) { file = diagnostic.Location.SourceTree.FilePath; offset = diagnostic.Location.SourceSpan.Start; length = diagnostic.Location.SourceSpan.Length; }
-        var dmsg = $"{diagnostic.Id}: {diagnostic.GetMessage()}";
-        return $"{diagnostic.Severity}\t{offset}\t{length}\t{dmsg}";
+        string file = ""; int startLine = -1, startCol = -1, length = 0;
+        if (diagnostic.Location.IsInSource)
+        {
+            var loc = diagnostic.Location.GetMappedLineSpan();
+            file = loc.HasMappedPath ? loc.Path : diagnostic.Location.SourceTree.FilePath;
+            startLine = loc.StartLinePosition.Line + 1;
+            startCol = loc.StartLinePosition.Character + 1;
+            length = diagnostic.Location.SourceSpan.Length;
+        }
+        return $"{file}({startLine},{startCol}): {diagnostic.Severity} {diagnostic.Id}: {diagnostic.GetMessage()}";
     }
-    public static string ToFileName(Diagnostic diagnostic)
-    {
-        if (diagnostic.Location.IsInSource) return diagnostic.Location.SourceTree.FilePath;
-        return "";
-    }
-    public static string ToFullString(Diagnostic diagnostic)
-    {
-        return ToFileName(diagnostic) + "\t" + ToString(diagnostic);
-    }
-    public bool Equals(Diagnostic x, Diagnostic y) => ToFullString(x) == ToFullString(y);
-    public int GetHashCode(Diagnostic x) => ToFullString(x).GetHashCode();
+    public bool Equals(Diagnostic x, Diagnostic y) => ToString(x) == ToString(y);
+    public int GetHashCode(Diagnostic x) => ToString(x).GetHashCode();
 }
 
 
@@ -739,12 +751,16 @@ class TreeRewriter : CSharpSyntaxRewriter
     SemanticModel SemanticModel;
     INamedTypeSymbol ConsoleType;
     List<string> Autoruns;
+    List<RegionDirectiveTriviaSyntax> Regions;
+    HashSet<MethodDeclarationSyntax> ErrorMethods;
 
-    public TreeRewriter(Compilation compilation, SyntaxTree tree, List<string> autoruns)
+    public TreeRewriter(Compilation compilation, SyntaxTree tree, List<string> autoruns, List<RegionDirectiveTriviaSyntax> regions, HashSet<MethodDeclarationSyntax> errorMethods) : base(true)
     {
         Compilation = compilation;
         OriginalTree = tree;
         Autoruns = autoruns;
+        Regions = regions;
+        ErrorMethods = errorMethods;
         SemanticModel = compilation.GetSemanticModel(tree);
         ConsoleType = Compilation.GetTypeByMetadataName("System.Console");
     }
@@ -758,6 +774,12 @@ class TreeRewriter : CSharpSyntaxRewriter
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
         => node.Identifier.Text == "Replay" ? node : base.VisitClassDeclaration(node);
 
+    public override SyntaxNode VisitRegionDirectiveTrivia(RegionDirectiveTriviaSyntax node)
+    {
+        Regions?.Add(node);
+        return base.VisitRegionDirectiveTrivia(node);
+    }
+
     public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
     {
         var members = ReplaceMembers(node.Members);
@@ -767,7 +789,11 @@ class TreeRewriter : CSharpSyntaxRewriter
             var member = SyntaxFactory.GlobalStatement(SyntaxFactory.ExpressionStatement(expr));
             members = new [] { member }.Concat(members);
         }
-        return node.WithMembers(SyntaxFactory.List(members));
+
+        node = node.WithMembers(SyntaxFactory.List<MemberDeclarationSyntax>());
+        node = base.VisitCompilationUnit(node) as CompilationUnitSyntax;
+        node = node.WithMembers(SyntaxFactory.List(members));
+        return node;
     }
         
 
@@ -782,25 +808,6 @@ class TreeRewriter : CSharpSyntaxRewriter
                     yield return SyntaxFactory.GlobalStatement(statement);
                 }
             }
-            else if (member.IsKind(SyntaxKind.FieldDeclaration))
-            {
-                yield return Visit(member) as FieldDeclarationSyntax;
-            }
-            else if (member.IsKind(SyntaxKind.MethodDeclaration))
-            {
-                var symbol = SemanticModel.GetDeclaredSymbol(member) as IMethodSymbol;
-                var attrs = symbol?.GetAttributes() ?? ImmutableArray<AttributeData>.Empty;
-                foreach (var attr in attrs)
-                {
-                    if (attr.AttributeClass.Name != "AutoRunAttribute") continue;
-                    Location loc = member.GetLocation();
-                    string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
-                    int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
-                    var s = $"{symbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}\t{symbol.Name}\t{file}\t{line}";
-                    Autoruns?.Add(s);
-                }
-                yield return Visit(member) as MethodDeclarationSyntax;
-            }
             else
             {
                 yield return Visit(member) as MemberDeclarationSyntax;
@@ -810,6 +817,41 @@ class TreeRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode VisitMethodDeclaration(MethodDeclarationSyntax node)
     {
+        var symbol = SemanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+
+        if (ErrorMethods.Contains(node))
+        {
+            // No point instrumenting this method
+            // TODO: not sure how to handle this. Should it throw? (unless it's an AutoRun test)?
+            if (node.Body == null)
+            {
+                // TODO: not sure how to handle this. Is it an expression body or just an error?
+            }
+            else
+            {
+                ExpressionSyntax returnExpression = null;
+                if (symbol.ReturnType != null && symbol.ReturnType.SpecialType != SpecialType.System_Void)
+                {
+                    returnExpression = SyntaxFactory.DefaultExpression(SyntaxFactory.ParseTypeName(symbol.ReturnType.ToDisplayString()));
+                }
+                StatementSyntax returnStatement = SyntaxFactory.ReturnStatement(returnExpression);
+                node = node.WithBody(node.Body.WithStatements(SyntaxFactory.List(new[] { returnStatement })));
+                node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
+            }
+            return node;
+        }
+
+        var attrs = symbol?.GetAttributes() ?? ImmutableArray<AttributeData>.Empty;
+        foreach (var attr in attrs)
+        {
+            if (attr.AttributeClass.Name != "AutoRunAttribute") continue;
+            Location loc = node.GetLocation();
+            string file = (loc == null) ? null : loc.GetMappedLineSpan().HasMappedPath ? loc.GetMappedLineSpan().Path : loc.SourceTree.FilePath;
+            int line = (loc == null) ? -1 : loc.GetMappedLineSpan().StartLinePosition.Line;
+            var s = $"{symbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}\t{symbol.Name}\t{file}\t{line}";
+            Autoruns?.Add(s);
+        }
+
         node = base.VisitMethodDeclaration(node) as MethodDeclarationSyntax;
         if (node.Body == null) return node;
         var log = SyntaxFactory_Log(null, null, null, null, 9); // TODO: fill this out properly
