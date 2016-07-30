@@ -6,35 +6,36 @@ using System;
 using Xunit;
 ```
 
-When we write code, we usually split it into *functions*. This code has a function named `GetValue`:
+When we write code, we usually split it into *methods*. This code has a method named `MyMethod`:
 
 ```csharp
-var result = GetValue();
+var result = MyMethod();
 Console.WriteLine(result);
 
-string GetValue()
+string MyMethod()
 {
-    return "in a function plz send hlp";
+    return "in a method plz send hlp";
 }
 ```
 
-___Exercise 1:___ Change the name of the above function from `GetValue` to `GetSampleValue`. You'll have to change two places --
-where you *invoke* the function, and where you *declare* it.
+___Exercise 1:___ Change the name of the above method from `MyMethod` to `GetValue`. You'll have to change two places --
+where you *invoke* the method, and where you *declare* it.
 
-___Exercise 2:___ Chang the function from returning the text string `"in a function..."` to returning the integer `42`. Hint:
-also change the *declared return type* of the function from `string` to `int`.
+___Exercise 2:___ Change the method from returning the text string `"in a method..."` to returning the integer `42`. Hint:
+also change the *declared return type* of the method from `string` to `int`.
 
 <br/>
 
-When we write a function, we usually also test that it's doing the right thing. Here's how we might test the above function:
+When we write a method, we usually also test that it's doing the right thing. Here's how we might test the above method.
+(If you look at the line numbers, you'll see that this block of code continues on from the previous one).
 
 
 ```csharp
 [Fact, AutoRun]
 void TestMyFunction()
 {
-    var testResult = GetValue();
-    Assert.Equal("in a function", testResult);
+    var testResult = MyMethod();
+    Assert.Equal(41, testResult);
 }
 ```
 

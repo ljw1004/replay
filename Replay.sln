@@ -12,6 +12,11 @@ EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "TestWebsocketService", "TestWebsocketService\TestWebsocketService.xproj", "{961CABB7-1BF0-4D1C-996D-09BA52C8F078}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "SampleProjects", "SampleProjects", "{F42761B9-A5B0-46FD-BE17-34D63A939339}"
+	ProjectSection(SolutionItems) = preProject
+		SampleProjects\HelloWorld\helloworld.md = SampleProjects\HelloWorld\helloworld.md
+		SampleProjects\Methods\methods.md = SampleProjects\Methods\methods.md
+		SampleProjects\NYI\NYI.md = SampleProjects\NYI\NYI.md
+	EndProjectSection
 EndProject
 Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "ConsoleApp1", "SampleProjects\ConsoleApp1\ConsoleApp1.xproj", "{7C7A9D98-AFAA-4853-8407-56D64D6B5356}"
 EndProject
@@ -21,12 +26,6 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApplication1", "SampleProjects\ConsoleApplication1\ConsoleApplication1.csproj", "{0F7D4533-F16A-4E66-BA3F-39A3465354C2}"
-EndProject
-Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "HelloWorld", "SampleProjects\HelloWorld\HelloWorld.xproj", "{BAA8DE42-C52E-404B-B023-62AABB095109}"
-EndProject
-Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "Methods", "SampleProjects\Methods\Methods.xproj", "{6616481E-1BBE-4426-9DB8-94D8EB184EB0}"
-EndProject
-Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "NYI", "SampleProjects\NYI\NYI.xproj", "{2A842A44-BD3F-407D-BA35-6F5BB56F416D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -58,18 +57,6 @@ Global
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2}.Release|Any CPU.Build.0 = Release|Any CPU
-		{BAA8DE42-C52E-404B-B023-62AABB095109}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{BAA8DE42-C52E-404B-B023-62AABB095109}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{BAA8DE42-C52E-404B-B023-62AABB095109}.Release|Any CPU.Build.0 = Release|Any CPU
-		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{6616481E-1BBE-4426-9DB8-94D8EB184EB0}.Release|Any CPU.Build.0 = Release|Any CPU
-		{2A842A44-BD3F-407D-BA35-6F5BB56F416D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2A842A44-BD3F-407D-BA35-6F5BB56F416D}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2A842A44-BD3F-407D-BA35-6F5BB56F416D}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2A842A44-BD3F-407D-BA35-6F5BB56F416D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -77,8 +64,5 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{7C7A9D98-AFAA-4853-8407-56D64D6B5356} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 		{0F7D4533-F16A-4E66-BA3F-39A3465354C2} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
-		{BAA8DE42-C52E-404B-B023-62AABB095109} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
-		{6616481E-1BBE-4426-9DB8-94D8EB184EB0} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
-		{2A842A44-BD3F-407D-BA35-6F5BB56F416D} = {F42761B9-A5B0-46FD-BE17-34D63A939339}
 	EndGlobalSection
 EndGlobal

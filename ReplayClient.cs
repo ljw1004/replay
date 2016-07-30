@@ -12,9 +12,6 @@ namespace System.Runtime.CompilerServices
     {
         public static T Log<T>(T data, string id, string file, int line, int reason)
         {
-            // Empty arguments is used purely to ensure the static constructor of Replay has been run
-            if (data == null && id == null && file == null) return default(T);
-
             // Gather all the pending Console.Writes from the app, via our hooked side-effect Console.Out monoid
             var s = MyOut.Log()?.Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
             if (s != null) Queue.Post(new LineItem(file, line, $"\"{s}\""));
@@ -27,11 +24,22 @@ namespace System.Runtime.CompilerServices
             return data;
         }
 
+        public static void Init(Func<string[]> autorunsLambda)
+        {
+            AutorunsTarget = autorunsLambda.Target;
+            Autoruns = autorunsLambda();
+            // TODO: also set up a single-threaded synchronization context
+            // https://blogs.msdn.microsoft.com/pfxteam/2012/01/20/await-synchronizationcontext-and-console-apps/
+            // and make the autoruns get invoked once that context has been idle for a bit.
+        }
+
 
         static TextWriter SystemOut = Console.Out;
         static TextReader SystemIn = Console.In;
         static HookOut MyOut = new HookOut();
         static HookIn MyIn = new HookIn();
+        static string[] Autoruns;
+        static object AutorunsTarget;
 
         static Channel<LineItem> Queue = new Channel<LineItem>();
 
@@ -240,47 +248,43 @@ namespace System.Runtime.CompilerServices
 
         }
 
-        public static void AutorunMethods(Func<string[]> autorunsLambda)
-        {
-            var autorunsTarget = autorunsLambda.Target;
-            var autoruns = autorunsLambda();
-            foreach (var cmd in autoruns)
-            {
-                var cmds = cmd.Split('\t');
-                string className = cmds[0], methodName = cmds[1], fileName = cmds[2];
-                int methodLineNumber = int.Parse(cmds[3]);
-                if (className.StartsWith("global::")) className = className.Replace("global::", "");
-                var t = Type.GetType(className);
-                if (t == null) { SystemOut.WriteLine($"ERROR\tAUTORUN class '{className}' not found"); continue; }
-                var method = t.GetTypeInfo().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
-                if (method == null) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' not found"); continue; }
-                if (method.GetParameters().Length != 0 || method.GetGenericArguments().Length != 0) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' has wrong signature"); continue; }
-                try
-                {
-                    method.Invoke(autorunsTarget, null);
-                }
-                catch (Exception ex)
-                {
-                    var li = new LineItem(fileName, methodLineNumber, "TEST FAILED - " + ex.Message);
-                    if (ex.InnerException != null)
-                    {
-                        var exT = ex.InnerException.GetType().GetTypeInfo();
-                        var exExp = exT.GetProperty("Expected");
-                        var exAct = exT.GetProperty("Actual");
-                        if (exExp != null && exAct != null)
-                        {
-                            var exp = exExp.GetValue(ex.InnerException) as string;
-                            var act = exAct.GetValue(ex.InnerException) as string;
-                            if (exp != null && act != null)
-                            {
-                                li = new LineItem(fileName, methodLineNumber, $"TEST FAILED - EXPECTED '{exp}' - ACTUAL '{act}'");
-                            }
-                        }
-                    }
-                    Queue.Post(li);
-                }
-            }
-        }
+        //    foreach (var cmd in autoruns)
+        //    {
+        //        var cmds = cmd.Split('\t');
+        //        string className = cmds[0], methodName = cmds[1], fileName = cmds[2];
+        //        int methodLineNumber = int.Parse(cmds[3]);
+        //        if (className.StartsWith("global::")) className = className.Replace("global::", "");
+        //        var t = Type.GetType(className);
+        //        if (t == null) { SystemOut.WriteLine($"ERROR\tAUTORUN class '{className}' not found"); continue; }
+        //        var method = t.GetTypeInfo().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
+        //        if (method == null) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' not found"); continue; }
+        //        if (method.GetParameters().Length != 0 || method.GetGenericArguments().Length != 0) { SystemOut.WriteLine($"ERROR\tAUTORUN method '{className}.{methodName}' has wrong signature"); continue; }
+        //        try
+        //        {
+        //            method.Invoke(autorunsTarget, null);
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            var li = new LineItem(fileName, methodLineNumber, "TEST FAILED - " + ex.Message);
+        //            if (ex.InnerException != null)
+        //            {
+        //                var exT = ex.InnerException.GetType().GetTypeInfo();
+        //                var exExp = exT.GetProperty("Expected");
+        //                var exAct = exT.GetProperty("Actual");
+        //                if (exExp != null && exAct != null)
+        //                {
+        //                    var exp = exExp.GetValue(ex.InnerException) as string;
+        //                    var act = exAct.GetValue(ex.InnerException) as string;
+        //                    if (exp != null && act != null)
+        //                    {
+        //                        li = new LineItem(fileName, methodLineNumber, $"TEST FAILED - EXPECTED '{exp}' - ACTUAL '{act}'");
+        //                    }
+        //                }
+        //            }
+        //            Queue.Post(li);
+        //        }
+        //    }
+        //}
 
         private static int GetStableHashCode(this string str)
         {

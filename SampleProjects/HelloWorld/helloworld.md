@@ -6,7 +6,7 @@ This is the simplest C# program:
 System.Console.WriteLine("hello world");
 ```
 
-___Exercise 1:___ Try putting your name in there, and see how the output changes to the right.
+___Exercise 1:___ Edit the code! Try putting your name in there, and see how the output changes to the right.
 
 
 <br/>
@@ -22,7 +22,8 @@ while (i < 3)
 }
 ```
 
-___Exercise 2:___ You can see it printed the message three times. Make it print `10` times. Make it print infinity times. Hint: `while (true)`.
+___Exercise 2:___ You can see it printed the message three times. Make it print `10` times. Make it print infinity times.
+Hint: `while (true)`.
 
 <br/>
 

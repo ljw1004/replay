@@ -47,7 +47,7 @@
     <Compile Include="..\ReplayClient.cs">
       <Link>ReplayClient.cs</Link>
     </Compile>
-    <Compile Include="SampleTransformedCode.cs" />
+    <Compile Include="SampleTransformedCode1.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Properties\" />
