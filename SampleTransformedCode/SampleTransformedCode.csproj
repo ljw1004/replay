@@ -47,6 +47,8 @@
     <Compile Include="..\ReplayClient.cs">
       <Link>ReplayClient.cs</Link>
     </Compile>
+    <Compile Include="AutorunAttribute.cs" />
+    <Compile Include="SampleTransformedCode2.cs" />
     <Compile Include="SampleTransformedCode1.cs" />
   </ItemGroup>
   <ItemGroup>

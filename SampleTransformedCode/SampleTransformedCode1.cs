@@ -2,20 +2,18 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
-class AutoRunAttribute : System.Attribute { }
 
-
-class Program
+class Program1
 {
-    static void Main()
+    static void NotMain()
     {
-        new Program().MainAsync().GetAwaiter().GetResult();
+        new Program1().MainAsync().GetAwaiter().GetResult();
     }
 
     async Task MainAsync()
     {
-        AutorunMethods = new[] { "Program\tTestMyFunction\tmethods.md\t999" };
-        Replay.Init(() => AutorunMethods);
+        AutorunMethods = new[] { "Program1\tTestMyFunction\tmethods.md\t999" };
+        await Replay.InitAsync(() => AutorunMethods);
         //
         Replay.Log<object>(null, null, null, -1, -1);
         var txt = Replay.Log<string>(GetText(), "txt", "methods.md", 9, 1);

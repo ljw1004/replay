@@ -199,7 +199,7 @@ class ReplayHost : IDisposable
     private async Task SendErrorAsync(string error, CancellationToken cancel)
     {
         var deferrable = new Deferrable();
-        Erred.Invoke(error, deferrable, cancel);
+        Erred?.Invoke(error, deferrable, cancel);
         await deferrable;
     }
 
@@ -619,11 +619,12 @@ class ReplayHost : IDisposable
         }
         if (autorunCode != "")
         {
-            autorunCode = "string[] AutorunMethods = new[] { " + autorunCode + "};\r\n";
-            autorunCode += "global::System.Runtime.CompilerServices.Replay.AutorunMethods(() => AutorunMethods);\r\n";
-            var document = project.AddDocument("AutorunMethods.csx", SourceText.From(autorunCode)).WithSourceCodeKind(SourceCodeKind.Script);
-            project = document.Project;
-
+            var prefixDocument = project.Documents.Where(d => d.Name == "_prefix.csx").Single();
+            var text = (await prefixDocument.GetTextAsync()).ToString();
+            text += "string[] AutorunMethods = new[] { " + autorunCode + "};\r\n";
+            text += "await global::System.Runtime.CompilerServices.Replay.InitAsync(() => AutorunMethods);\r\n";
+            prefixDocument = prefixDocument.WithText(SourceText.From(text));
+            project = prefixDocument.Project;
         }
 
         return project;
@@ -1146,6 +1147,7 @@ public static class ScriptWorkspace
         var project = workspace.AddProject(projectInfo);
 
         project = project.AddAdditionalDocument("project.json", File.ReadAllText(dir + "/obj/replay/project.json"), null, "project.json").Project;
+        project = project.AddDocument("_prefix.csx", "", null, "_prefix.csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         foreach (var file in Directory.GetFiles(dir, "*.cs")) project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).Project;
         foreach (var file in Directory.GetFiles(dir, "*.csx")) project = project.AddDocument(Path.GetFileName(file), File.ReadAllText(file), null, Path.GetFileName(file)).WithSourceCodeKind(SourceCodeKind.Script).Project;
         foreach (var file in Directory.GetFiles(dir, "*.md"))
@@ -1155,7 +1157,7 @@ public static class ScriptWorkspace
             project = project.AddDocument(Path.GetFileName(file), txt, null, Path.GetFileName(file)).Project;
             project = project.AddDocument(Path.GetFileName(file) + ".csx", csx, null, Path.GetFileName(file) + ".csx").WithSourceCodeKind(SourceCodeKind.Script).Project;
         }
-        project = project.AddDocument("AdditionalStuff.cs", SourceText.From(@"class AutoRunAttribute : System.Attribute { }"), null, "AdditionalStuff.cs").Project;
+        project = project.AddDocument("_postfix.cs", SourceText.From(@"class AutoRunAttribute : System.Attribute { }"), null, "_postfix.cs").Project;
 
 
         return project;
