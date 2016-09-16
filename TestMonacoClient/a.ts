@@ -122,7 +122,8 @@ function maybeCollapseEditor(editor:monaco.editor.IStandaloneCodeEditor):void
         if (line.startsWith("#") || line.startsWith("using") || line.startsWith("//")) npreambles++;
         else if (line === "") nlines--;
     }
-    if (npreambles < nlines*0.75) return;
+    //if (npreambles < nlines*0.75) return;
+    if (npreambles < 3) return;
     
     let dom = editor.getDomNode().parentElement;
     dom.style.display = "none";

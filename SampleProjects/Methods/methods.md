@@ -59,4 +59,4 @@ Download this app as a single-file native binary:
 
 <br/>
 
-___[>> Proceed to the next tutorial, "Web service"...](NYI.html)___
+___[>> Proceed to the next tutorial, "Web service"...](WebService.html)___
