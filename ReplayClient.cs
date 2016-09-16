@@ -47,6 +47,7 @@ namespace System.Runtime.CompilerServices
         static TextReader SystemIn = Console.In;
         static HookOut MyOut = new HookOut();
         static HookIn MyIn = new HookIn();
+        static TaskCompletionSource<bool> AutorunTcs = new TaskCompletionSource<bool>();
         static string[] Autoruns;
         static object AutorunsTarget;
         static SingleThreadedSynchronizationContext AsyncPumpContext = new SingleThreadedSynchronizationContext();
@@ -75,12 +76,12 @@ namespace System.Runtime.CompilerServices
 
         private sealed class SingleThreadedSynchronizationContext : SynchronizationContext
         {
-            private readonly BlockingCollection<KeyValuePair<SendOrPostCallback, object>> m_queue = new BlockingCollection<KeyValuePair<SendOrPostCallback, object>>();
+            private readonly Channel<KeyValuePair<SendOrPostCallback, object>> m_queue = new Channel<KeyValuePair<SendOrPostCallback, object>>();
             private readonly Thread m_thread = Thread.CurrentThread;
 
             public override void Post(SendOrPostCallback d, object state)
             {
-                m_queue.Add(new KeyValuePair<SendOrPostCallback, object>(d, state));
+                m_queue.Post(new KeyValuePair<SendOrPostCallback, object>(d, state));
             }
 
             public override void Send(SendOrPostCallback d, object state)
@@ -91,13 +92,20 @@ namespace System.Runtime.CompilerServices
             public void RunOnCurrentThread() 
             {
                 SynchronizationContext.SetSynchronizationContext(AsyncPumpContext);
-                foreach (var workItem in m_queue.GetConsumingEnumerable())
+                bool seenAtLeastOneItem = false;
+                while (true)
                 {
-                    workItem.Key(workItem.Value);
+                    var nextItemTask = m_queue.ReceiveAsync();
+                    // If there are no items left in the queue, we can signal AutorunTask
+                    if (!nextItemTask.IsCompleted && seenAtLeastOneItem) AutorunTcs?.TrySetResult(true);
+                    var nextItem = nextItemTask.GetAwaiter().GetResult();
+                    if (nextItem.Key == null && nextItem.Value == null) { AutorunTcs?.TrySetResult(true); return; }
+                    seenAtLeastOneItem = true;
+                    nextItem.Key(nextItem.Value);
                 }
             }
 
-            public void Complete() { m_queue.CompleteAdding(); }
+            public void Complete() { m_queue.Post(new KeyValuePair<SendOrPostCallback,object>(null,null)); }
         }
 
         public class YieldingAwaitable
@@ -138,9 +146,11 @@ namespace System.Runtime.CompilerServices
         {
             var queueTask = Queue.ReceiveAsync();
             var stdinTask = Task.Run(SystemIn.ReadLineAsync);
-            var endTask = Task.Run(async () => {
-                while (true) { await Task.Delay(100); if (!(mainThread as Thread).IsAlive) return; }
+            var autorunTask = Task.Run(async () => {
+                while (true) { await Task.Delay(100); if (!(mainThread as Thread).IsAlive) break; }
+                AutorunTcs.TrySetResult(true);
             });
+            var neverTask = new TaskCompletionSource<bool>().Task;
             SystemOut.WriteLine("OK");
 
             // This is the state of the client
@@ -151,7 +161,7 @@ namespace System.Runtime.CompilerServices
 
             while (true)
             {
-                Task.WaitAny(queueTask, stdinTask, endTask);
+                Task.WaitAny(queueTask, stdinTask, AutorunTcs?.Task ?? neverTask);
 
                 if (stdinTask.IsCompleted)
                 {
@@ -250,9 +260,9 @@ namespace System.Runtime.CompilerServices
                     continue;
                 }
 
-                if (endTask?.IsCompleted == true)
+                if (AutorunTcs?.Task.IsCompleted == true)
                 {
-                    endTask = new TaskCompletionSource<object>().Task; // hacky way prevent it ever firing again
+                    AutorunTcs = null;
 
                     AsyncPumpContext.Post(_ => DoAutoruns(), null);
 

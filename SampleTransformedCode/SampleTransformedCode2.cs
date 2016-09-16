@@ -2,7 +2,6 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
-
 class Program2
 {
     static void Main()
@@ -10,13 +9,16 @@ class Program2
         new Program2().MainAsync().GetAwaiter().GetResult();
     }
 
+    TaskCompletionSource<int> tcs = new TaskCompletionSource<int>();
+
     async Task MainAsync()
     {
         AutorunMethods = new[] { "Program2\tTestMyFunction\tmethods.md\t999" };
         await Replay.InitAsync(() => AutorunMethods);
-        //
+
         var txt = GetText();
-        await Task.Delay(100);
+        await Task.Delay(1000);
+        await tcs.Task;
         System.Console.WriteLine(txt);
     }
 
@@ -31,6 +33,13 @@ class Program2
     void TestMyFunction()
     {
         var txt = GetText();
-        Assert.Equal(txt, "in a function");
+        try
+        {
+            Assert.Equal(txt, "in a function");
+        }
+        finally
+        {
+            tcs.SetResult(1);
+        }
     }
 }
